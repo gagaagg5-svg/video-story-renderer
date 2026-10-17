@@ -265,7 +265,22 @@ class MCP:
                 else:
                     result = decode_rpc(response.read(8 * 1024 * 1024), self.counter)
         except urllib.error.HTTPError as exc:
-            raise RuntimeError(f'vidIQ: HTTP {exc.code}. Проверьте API key, доступ и баланс. Автоповтор отключён.') from None
+            # Keep the failing MCP step visible: a 403 during initialize/tools/list
+            # is an authentication/client-access problem, while a 403 from
+            # tools/call can be a tool-level permission or account restriction.
+            # Never include the Authorization header or an unredacted key.
+            try:
+                detail = exc.read(2048).decode('utf-8', errors='replace').strip()
+            except Exception:
+                detail = ''
+            if self.key:
+                detail = detail.replace(self.key, '[ключ скрыт]')
+            detail = re.sub(r'(?i)(bearer\s+)[A-Za-z0-9._~+/-]+=*', r'\1[скрыт]', detail)
+            detail = re.sub(r'\s+', ' ', detail)[:300]
+            message = f'vidIQ: HTTP {exc.code} на этапе «{method}». Запрос не повторён.'
+            if detail:
+                message += f' Ответ сервера: {detail}'
+            raise RuntimeError(message) from None
         except (urllib.error.URLError, TimeoutError, OSError):
             raise RuntimeError('Нет ответа vidIQ. Проверьте интернет. Запрос не повторён; списание может быть неизвестно.') from None
         if 'error' in result:
