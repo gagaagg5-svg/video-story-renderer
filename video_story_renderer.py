@@ -8,7 +8,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from duration_utils import parse_duration, format_duration
+from duration_utils import parse_duration, format_duration, duration_from_interval
 
 APP_NAME = "Video Story Renderer"
 FPS = 30
@@ -184,18 +184,27 @@ class Renderer(tk.Tk):
                 dialect = csv.Sniffer().sniff(sample, delimiters=",;\t")
                 reader = csv.DictReader(f, dialect=dialect)
                 for row in reader:
-                    name = (row.get("image") or row.get("filename") or row.get("file") or "").strip()
-                    dur = (row.get("duration_seconds") or row.get("duration") or row.get("seconds") or "").strip()
-                    if not name and not dur:
+                    normalized = {(key or "").strip().lower(): (value or "").strip() for key, value in row.items()}
+                    name = next((normalized.get(k, "") for k in ("image", "filename", "file", "frame", "кадр", "изображение") if normalized.get(k)), "")
+                    dur = next((normalized.get(k, "") for k in ("duration_seconds", "duration", "seconds", "длительность") if normalized.get(k)), "")
+                    start = next((normalized.get(k, "") for k in ("start_time", "start", "начало") if normalized.get(k)), "")
+                    end = next((normalized.get(k, "") for k in ("end_time", "end", "конец") if normalized.get(k)), "")
+                    if not name and not dur and not start and not end:
                         continue
-                    if not name or not dur:
-                        raise ValueError("В каждой строке CSV нужны изображение и длительность.")
+                    if not name:
+                        raise ValueError("В каждой строке CSV нужно имя изображения в колонке image.")
+                    if dur:
+                        frame_duration = parse_duration(dur)
+                    elif start and end:
+                        frame_duration = duration_from_interval(start, end)
+                    else:
+                        raise ValueError("Для каждого кадра укажи duration_seconds либо обе отметки start_time и end_time.")
                     img = Path(name)
                     if not img.is_absolute():
                         img = Path(path).parent / img
                     if not img.exists():
                         raise FileNotFoundError(f"Не найден кадр: {img}")
-                    rows.append({"path": str(img.resolve()), "duration": parse_duration(dur)})
+                    rows.append({"path": str(img.resolve()), "duration": frame_duration})
             if not rows:
                 raise ValueError("В CSV не найдены строки с колонками image и duration_seconds.")
             self.frames = rows
