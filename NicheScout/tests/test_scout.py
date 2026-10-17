@@ -1,7 +1,9 @@
 import csv
+import io
 import json
 import tempfile
 import unittest
+import urllib.error
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -128,6 +130,15 @@ class TransportTests(unittest.TestCase):
         raw=('event: message\ndata: '+json.dumps(result)+'\n\n').encode()
         self.assertEqual(scout.decode_rpc(raw,7),result)
         with self.assertRaises(RuntimeError): scout.decode_rpc(raw,8)
+
+    def test_http_error_shows_stage_and_redacts_key(self):
+        c=scout.MCP('test-key',0)
+        err=urllib.error.HTTPError(scout.ENDPOINT,403,'Forbidden',{},io.BytesIO(b'bad key test-key'))
+        with patch('scout.urllib.request.build_opener') as opener:
+            opener.return_value.open.side_effect=err
+            with self.assertRaisesRegex(RuntimeError,'HTTP 403.*initialize.*bad key \\[ключ скрыт\\]') as raised:
+                c.rpc('initialize',{})
+        self.assertNotIn('test-key',str(raised.exception))
 
     def test_budget_stops_second_call(self):
         c=self.client()
