@@ -1,0 +1,98 @@
+name: Build Niche Scout for Windows
+
+on:
+  push:
+    branches:
+      - niche-scout/windows-build
+    paths:
+      - 'NicheScout/**'
+      - '.github/workflows/niche-scout-windows.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Test, package and install on Windows
+    runs-on: windows-2022
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: NicheScout
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Install packaging tool
+        run: python -m pip install "pyinstaller>=6.11,<7"
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
+      - name: Test application window before packaging
+        run: |
+          python scout.py --self-test source-smoke.json
+          if ($LASTEXITCODE -ne 0) { throw 'Source smoke test failed' }
+          $report = Get-Content source-smoke.json -Raw | ConvertFrom-Json
+          if (-not $report.ok) { throw 'Source GUI smoke test failed' }
+      - name: Build standalone executable with Python included
+        run: |
+          python -m PyInstaller --noconfirm --clean --windowed --onefile --noupx --name NicheScout scout.py
+          if ($LASTEXITCODE -ne 0) { throw 'PyInstaller failed' }
+      - name: Test standalone executable
+        run: |
+          $exe = (Resolve-Path 'dist/NicheScout.exe').Path
+          $report = Join-Path $PWD 'exe-smoke.json'
+          $process = Start-Process $exe -ArgumentList @('--self-test', ('"{0}"' -f $report)) -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Executable test failed: $($process.ExitCode)" }
+          $result = Get-Content $report -Raw | ConvertFrom-Json
+          if (-not $result.ok) { throw 'Executable GUI test failed' }
+      - name: Build Windows installer
+        run: |
+          $compiler = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $compiler)) { throw 'Inno Setup compiler is missing' }
+          & $compiler 'packaging/installer.iss'
+          if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed' }
+      - name: Install and test installed application
+        run: |
+          $directory = Join-Path $env:RUNNER_TEMP 'NicheScout-installed'
+          $installer = (Resolve-Path 'installer-output/NicheScout-Setup.exe').Path
+          $args = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', ('/DIR="{0}"' -f $directory))
+          $process = Start-Process $installer -ArgumentList $args -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Installation failed: $($process.ExitCode)" }
+          $report = Join-Path $PWD 'installed-smoke.json'
+          $exe = Join-Path $directory 'NicheScout.exe'
+          $process = Start-Process $exe -ArgumentList @('--self-test', ('"{0}"' -f $report)) -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw 'Installed application test failed' }
+          $result = Get-Content $report -Raw | ConvertFrom-Json
+          if (-not $result.ok) { throw 'Installed GUI test failed' }
+      - name: Prepare downloads and checksums
+        run: |
+          New-Item -ItemType Directory -Path release -Force | Out-Null
+          Copy-Item dist/NicheScout.exe release/
+          Copy-Item installer-output/NicheScout-Setup.exe release/
+          Copy-Item README_WINDOWS_RU.txt release/
+          Copy-Item *-smoke.json release/
+          Get-ChildItem release/*.exe | ForEach-Object {
+            $hash = Get-FileHash $_.FullName -Algorithm SHA256
+            "$($hash.Hash.ToLower())  $($_.Name)"
+          } | Set-Content release/SHA256SUMS.txt -Encoding utf8
+      - name: Upload ready-to-use Windows files
+        uses: actions/upload-artifact@v4
+        with:
+          name: NicheScout-Windows
+          path: NicheScout/release/
+          retention-days: 30
+          if-no-files-found: error
+      - name: Upload test diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: NicheScout-test-diagnostics
+          path: NicheScout/*-smoke.json
+          retention-days: 7
+          if-no-files-found: ignore
