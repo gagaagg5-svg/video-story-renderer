@@ -1,0 +1,62 @@
+name: Build Windows Installer
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+      - name: Install build tools and run unit tests
+        run: |
+          python -m pip install "pyinstaller>=6.11,<7"
+          python -m unittest discover -s . -p "test_*.py"
+      - name: Download FFmpeg
+        run: python packaging/download_ffmpeg.py
+      - name: Bundle application, Python and FFmpeg
+        run: >-
+          python -m PyInstaller --noconfirm --clean --windowed --onedir
+          --name VideoStoryRenderer
+          --add-binary "vendor/ffmpeg/ffmpeg.exe;."
+          --add-binary "vendor/ffmpeg/ffprobe.exe;."
+          --add-data "vendor/ffmpeg/LICENSE;licenses/ffmpeg"
+          --add-data "vendor/ffmpeg/README.txt;licenses/ffmpeg"
+          --add-data "vendor/ffmpeg/SOURCE_INFO.txt;licenses/ffmpeg"
+          video_story_renderer.py
+      - name: Test the bundled application
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path "dist/VideoStoryRenderer/VideoStoryRenderer.exe"
+          $process = Start-Process $exe -ArgumentList "--self-test" -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Application self-test failed: $($process.ExitCode)" }
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $compiler = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $compiler)) { throw "Inno Setup compiler is missing from runner" }
+          & $compiler "packaging/installer.iss"
+          if ($LASTEXITCODE -ne 0) { throw "Installer compilation failed" }
+      - name: Verify installation
+        shell: pwsh
+        run: |
+          $directory = Join-Path $env:RUNNER_TEMP "VideoStoryRenderer-installed"
+          $installer = Resolve-Path "installer-output/VideoStoryRenderer-Setup.exe"
+          $arguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', ('/DIR="{0}"' -f $directory))
+          $process = Start-Process $installer -ArgumentList $arguments -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Installation failed" }
+          $exe = Join-Path $directory "VideoStoryRenderer.exe"
+          $process = Start-Process $exe -ArgumentList "--self-test" -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Installed application self-test failed" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VideoStoryRenderer-Windows-Installer
+          path: installer-output/VideoStoryRenderer-Setup.exe
+          retention-days: 7
+          if-no-files-found: error
