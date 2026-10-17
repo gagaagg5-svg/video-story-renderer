@@ -1,4 +1,4 @@
-image,duration_seconds
-01_intro.jpg,35
-02_room.jpg,480
-03_window.jpg,480
+image,start_time,end_time
+01_intro.jpg,00:00:00,00:00:35
+02_room.jpg,00:00:35,00:08:35
+03_window.jpg,00:08:35,00:16:35
