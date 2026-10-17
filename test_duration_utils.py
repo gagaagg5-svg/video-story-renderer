@@ -1,5 +1,5 @@
 import unittest
-from duration_utils import parse_duration, format_duration
+from duration_utils import parse_duration, format_duration, duration_from_interval
 
 class DurationTests(unittest.TestCase):
     def test_seconds(self):
@@ -20,6 +20,12 @@ class DurationTests(unittest.TestCase):
         self.assertEqual(format_duration(3723.5), '01:02:03.5')
         for n in [0.001, 0.5, 59.999, 3600.123]:
             self.assertAlmostEqual(parse_duration(format_duration(n)), n, places=3)
+
+    def test_csv_start_end_interval(self):
+        self.assertEqual(duration_from_interval('00:00:00', '00:00:35'), 35)
+        self.assertEqual(duration_from_interval('00:08:00', '00:16:30'), 510)
+        with self.assertRaises(ValueError):
+            duration_from_interval('00:10:00', '00:09:59')
 
 if __name__ == '__main__':
     unittest.main()
