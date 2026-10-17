@@ -15,6 +15,7 @@ FPS = 30
 WIDTH = 1920
 HEIGHT = 1080
 IMAGE_TYPES = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
+VIDEO_TYPES = {".mp4", ".mov", ".m4v", ".mkv", ".avi", ".webm"}
 
 
 def ffmpeg_path():
@@ -60,6 +61,7 @@ class Renderer(tk.Tk):
         self.minsize(760, 560)
         self.frames = []  # {path, duration}
         self.voice_path = tk.StringVar()
+        self.intro_video_path = tk.StringVar()
         self.music_path = tk.StringVar()
         self.output_path = tk.StringVar()
         self.music_volume = tk.DoubleVar(value=0.12)
@@ -72,7 +74,7 @@ class Renderer(tk.Tk):
         root = ttk.Frame(self, padding=12)
         root.pack(fill="both", expand=True)
         ttk.Label(root, text="Сборка видеоистории", font=("Segoe UI", 17, "bold")).pack(anchor="w")
-        ttk.Label(root, text="Кадры + озвучка + фоновая музыка → MP4 1920×1080", foreground="#555").pack(anchor="w", pady=(2, 10))
+        ttk.Label(root, text="Вступительное видео + кадры + озвучка + музыка → MP4 1920×1080", foreground="#555").pack(anchor="w", pady=(2, 10))
 
         controls = ttk.Frame(root)
         controls.pack(fill="x", pady=(0, 6))
@@ -102,17 +104,18 @@ class Renderer(tk.Tk):
 
         media = ttk.LabelFrame(root, text="Аудио и экспорт", padding=8)
         media.pack(fill="x", pady=(10, 0))
-        self._file_row(media, "Озвучка", self.voice_path, self.pick_voice, 0)
-        self._file_row(media, "Фоновая музыка (необязательно)", self.music_path, self.pick_music, 1)
-        self._file_row(media, "Сохранить MP4 как", self.output_path, self.pick_output, 2)
+        self._file_row(media, "Вступительное видео (необязательно)", self.intro_video_path, self.pick_intro_video, 0)
+        self._file_row(media, "Озвучка", self.voice_path, self.pick_voice, 1)
+        self._file_row(media, "Фоновая музыка (необязательно)", self.music_path, self.pick_music, 2)
+        self._file_row(media, "Сохранить MP4 как", self.output_path, self.pick_output, 3)
         opts = ttk.Frame(media)
-        opts.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(7, 0))
+        opts.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(7, 0))
         ttk.Checkbutton(opts, text="Плавный медленный зум", variable=self.zoom_enabled).pack(side="left")
         ttk.Label(opts, text="Громкость музыки:").pack(side="left", padx=(20, 5))
         ttk.Scale(opts, from_=0.02, to=0.35, variable=self.music_volume, orient="horizontal", length=140).pack(side="left")
         ttk.Label(opts, text="(относительно озвучки)", foreground="#666").pack(side="left", padx=5)
         self.render_button = ttk.Button(media, text="РЕНДЕРИТЬ ВИДЕО", command=self.start_render)
-        self.render_button.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(9, 0), ipady=5)
+        self.render_button.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(9, 0), ipady=5)
         media.columnconfigure(1, weight=1)
 
         self.progress = ttk.Progressbar(root, mode="indeterminate")
@@ -218,6 +221,10 @@ class Renderer(tk.Tk):
         p = filedialog.askopenfilename(title="Выбери файл озвучки", filetypes=[("Аудио", "*.mp3 *.wav *.m4a *.aac *.flac *.ogg"), ("Все файлы", "*.*")])
         if p: self.voice_path.set(p)
 
+    def pick_intro_video(self):
+        p = filedialog.askopenfilename(title="Выбери вступительное видео", filetypes=[("Видео", "*.mp4 *.mov *.m4v *.mkv *.avi *.webm"), ("Все файлы", "*.*")])
+        if p: self.intro_video_path.set(p)
+
     def pick_music(self):
         p = filedialog.askopenfilename(title="Выбери фоновую музыку", filetypes=[("Аудио", "*.mp3 *.wav *.m4a *.aac *.flac *.ogg"), ("Все файлы", "*.*")])
         if p: self.music_path.set(p)
@@ -248,6 +255,15 @@ class Renderer(tk.Tk):
             return
         sources = [Path(f["path"]).resolve() for f in self.frames]
         sources.append(Path(self.voice_path.get()).resolve())
+        intro_video = self.intro_video_path.get().strip()
+        if intro_video:
+            if not Path(intro_video).exists():
+                messagebox.showerror(APP_NAME, "Вступительное видео не найдено.")
+                return
+            if Path(intro_video).suffix.lower() not in VIDEO_TYPES:
+                messagebox.showerror(APP_NAME, "Выбери видеофайл MP4, MOV, M4V, MKV, AVI или WebM.")
+                return
+            sources.append(Path(intro_video).resolve())
         if self.music_path.get():
             sources.append(Path(self.music_path.get()).resolve())
         output = Path(self.output_path.get()).resolve()
@@ -258,6 +274,7 @@ class Renderer(tk.Tk):
             return
         config = {
             "frames": [dict(f) for f in self.frames],
+            "intro_video": intro_video,
             "voice": self.voice_path.get(), "music": self.music_path.get(),
             "output": str(output), "zoom": self.zoom_enabled.get(),
             "volume": float(self.music_volume.get()),
@@ -271,19 +288,32 @@ class Renderer(tk.Tk):
         temp_dir = None
         pending_output = None
         try:
-            requested_total = sum(float(f["duration"]) for f in config["frames"])
+            intro_duration = probe_duration(config["intro_video"], ffmpeg) if config.get("intro_video") else 0
+            if config.get("intro_video") and not intro_duration:
+                raise ValueError("Не удалось определить длительность вступительного видео.")
+            requested_total = intro_duration + sum(float(f["duration"]) for f in config["frames"])
             if requested_total <= 0:
                 raise ValueError("Суммарная длительность кадров должна быть больше нуля.")
-            total_frames = sum(max(1, round(float(f["duration"]) * FPS)) for f in config["frames"])
+            intro_frames = max(1, round(intro_duration * FPS)) if config.get("intro_video") else 0
+            total_frames = intro_frames + sum(max(1, round(float(f["duration"]) * FPS)) for f in config["frames"])
             total = total_frames / FPS
             audio_duration = probe_duration(config["voice"], ffmpeg)
             if audio_duration and audio_duration > requested_total + 1:
                 raise ValueError(f"Озвучка длится {audio_duration/60:.1f} мин, а кадры рассчитаны на {requested_total/60:.1f} мин. Увеличь тайминг кадров.")
             temp_dir = tempfile.mkdtemp(prefix="video_story_render_")
             segments = []
+            if config.get("intro_video"):
+                intro_seg = os.path.join(temp_dir, "scene_0000_intro.mp4")
+                intro_vf = "scale=2200:1238:force_original_aspect_ratio=increase,crop=2200:1238,scale=1920:1080,fps=30,setsar=1,format=yuv420p"
+                intro_cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-i", config["intro_video"], "-vf", intro_vf, "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p", "-r", str(FPS), "-movflags", "+faststart", intro_seg]
+                self.after(0, lambda: self.status.set("Обрабатываю вступительное видео…"))
+                result = subprocess.run(intro_cmd, capture_output=True, text=True)
+                if result.returncode:
+                    raise RuntimeError(result.stderr[-2000:] or "Ошибка FFmpeg при обработке вступительного видео.")
+                segments.append(intro_seg)
             for i, item in enumerate(config["frames"]):
                 frames_count = max(1, round(float(item["duration"]) * FPS))
-                seg = os.path.join(temp_dir, f"scene_{i:04d}.mp4")
+                seg = os.path.join(temp_dir, f"scene_{i+1 if config.get('intro_video') else i:04d}.mp4")
                 if config["zoom"]:
                     zoom = f"zoompan=z='1+0.08*on/{max(1, frames_count - 1)}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=1920x1080:fps=30"
                 else:
