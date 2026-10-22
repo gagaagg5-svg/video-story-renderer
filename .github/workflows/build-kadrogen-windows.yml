@@ -1,0 +1,64 @@
+name: Build KadroGen Windows
+
+on:
+  push:
+    branches: [kadrogen-windows]
+    paths:
+      - 'kadrogen/**'
+      - '.github/workflows/build-kadrogen-windows.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: kadrogen
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+      - name: Test image and timing import
+        run: python tests/test_manual_images.py
+      - name: Download FFmpeg
+        run: python packaging/download_ffmpeg.py
+      - name: Build standalone application
+        run: python -m PyInstaller --noconfirm --clean KadroGen.spec
+      - name: Complete portable folder
+        shell: pwsh
+        run: |
+          Copy-Item ffmpeg dist/KadroGen/ffmpeg -Recurse -Force
+          Copy-Item KadroGen.exe.config dist/KadroGen/KadroGen.exe.config
+          Copy-Item "СВОИ_ИЗОБРАЖЕНИЯ_README.txt" dist/KadroGen/
+          Copy-Item packaging/START_HERE_RU.txt dist/KadroGen/
+      - name: Test compiled EXE with images, CSV and FFmpeg
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path dist/KadroGen/KadroGen.exe).Path
+          $result = Join-Path $env:RUNNER_TEMP kadrogen-self-test.json
+          $process = Start-Process $exe -ArgumentList @('--self-test', $result) -Wait -PassThru
+          if (Test-Path $result) { Get-Content $result }
+          if ($process.ExitCode -ne 0) { throw "EXE self-test failed: $($process.ExitCode)" }
+          if (-not (Test-Path $result)) { throw 'EXE did not produce a test report' }
+          $report = Get-Content $result -Raw | ConvertFrom-Json
+          if (-not $report.ok) { throw 'EXE test report contains an error' }
+      - name: Package for download
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/KadroGen -DestinationPath KadroGen-Windows-Images-Timing.zip -CompressionLevel Optimal
+      - uses: actions/upload-artifact@v4
+        with:
+          name: KadroGen-Windows-Images-Timing
+          path: kadrogen/KadroGen-Windows-Images-Timing.zip
+          retention-days: 14
+          if-no-files-found: error
