@@ -4,8 +4,10 @@ This path never calls an image generator. It deliberately keeps its job cache
 separate from Kadro.Gen's scene-generation jobs.
 """
 import hashlib
+import base64
 import csv
 import io
+import math
 import os
 import re
 import shutil
@@ -100,7 +102,7 @@ def _read_xml_timing(file_path):
     return tracks, fps
 
 
-def resolve_timing(paths, timing_file, audio_duration):
+def resolve_timing(paths, timing_file, audio_duration, intro_duration=0.0):
     """Return images in timeline order with durations; enforce one continuous image per clip."""
     if not timing_file:
         duration = audio_duration / len(paths)
@@ -127,8 +129,8 @@ def resolve_timing(paths, timing_file, audio_duration):
         for i, (_, start, end) in enumerate(clips):
             if start < 0 or (i and start != clips[i - 1][2]):
                 raise ValueError("XML: на дорожке есть разрыв или наложение кадров. Нужна непрерывная дорожка изображений.")
-            if i == 0 and start != 0:
-                raise ValueError("XML: первый кадр должен начинаться в начале таймлайна (00:00:00:00).")
+            if i == 0 and start != 0 and abs(start / fps - intro_duration) > 1 / fps + 0.01:
+                raise ValueError("XML: первый кадр должен начинаться в 00:00 или сразу после вступительного видео.")
         items = [(name, (end - start) / fps) for name, start, end in clips]
     else:
         raise ValueError("Тайминг: поддерживаются только CSV и DaVinci FCP 7 XML.")
@@ -158,6 +160,41 @@ def resolve_timing(paths, timing_file, audio_duration):
     return ordered, durations
 
 
+def intro_duration(path):
+    """A silent introductory video runs under the MP3 from the start."""
+    if not path:
+        return 0.0
+    if not os.path.isfile(path) or os.path.splitext(path)[1].lower() not in {".mp4", ".mov", ".mkv", ".webm"}:
+        raise ValueError("Для вступления выберите существующий MP4, MOV, MKV или WEBM.")
+    try:
+        result = pipeline.audio_duration(path)
+        video = pipeline.subprocess.run(
+            [pipeline.ffmpeg_bin("ffprobe"), "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=codec_type", "-of", "csv=p=0", path],
+            capture_output=True, text=True, check=True, creationflags=pipeline.NO_WINDOW,
+            timeout=15).stdout.strip()
+    except (OSError, ValueError, RuntimeError, pipeline.subprocess.CalledProcessError) as exc:
+        raise ValueError(f"Не удалось прочитать вступительное видео: {exc}") from exc
+    if not math.isfinite(result) or result < 0.3:
+        raise ValueError("Вступительное видео должно длиться не менее 0,3 секунды.")
+    if video != "video":
+        raise ValueError("Во вступительном файле не найдена видеодорожка.")
+    return result
+
+
+def image_preview(folder, index):
+    paths = list_images(folder)
+    if not isinstance(index, int) or not 0 <= index < len(paths):
+        raise ValueError("Кадр не найден.")
+    with Image.open(paths[index]) as original:
+        image = pipeline._fit_16_9(ImageOps.exif_transpose(original).convert("RGB"))
+        image.thumbnail((640, 360))
+        data = io.BytesIO()
+        image.save(data, format="JPEG", quality=80)
+    return {"name": os.path.basename(paths[index]),
+            "src": "data:image/jpeg;base64," + base64.b64encode(data.getvalue()).decode("ascii")}
+
+
 def _natural_key(path):
     return [int(part) if part.isdigit() else part.casefold()
             for part in re.split(r"(\d+)", os.path.basename(path))]
@@ -182,13 +219,13 @@ def job_dir(audio):
     return os.path.join(pipeline.data_dir(), "jobs", f"manual_{stem}_{suffix}")
 
 
-def _import_images(paths, work_dir, progress):
+def _import_images(paths, work_dir, progress, offset=0):
     image_dir = os.path.join(work_dir, "images")
     os.makedirs(image_dir, exist_ok=True)
-    stamp = [{"path": os.path.normcase(os.path.abspath(p)), "size": os.stat(p).st_size,
+    stamp = [{"offset": offset, "path": os.path.normcase(os.path.abspath(p)), "size": os.stat(p).st_size,
               "mtime_ns": os.stat(p).st_mtime_ns} for p in paths]
     manifest = os.path.join(work_dir, "manual_images.json")
-    ready = all(os.path.isfile(os.path.join(image_dir, f"{i:04d}.png")) for i in range(len(paths)))
+    ready = all(os.path.isfile(os.path.join(image_dir, f"{i + offset:04d}.png")) for i in range(len(paths)))
     if ready and pipeline.read_json(manifest) == stamp:
         progress("images", len(paths), len(paths), "свои изображения уже подготовлены")
         return image_dir
@@ -201,7 +238,7 @@ def _import_images(paths, work_dir, progress):
             os.remove(os.path.join(image_dir, name))
     for i, path in enumerate(paths):
         pipeline.check_cancel()
-        dest = os.path.join(image_dir, f"{i:04d}.png")
+        dest = os.path.join(image_dir, f"{i + offset:04d}.png")
         tmp = dest + ".part"
         try:
             with Image.open(path) as original:
@@ -218,7 +255,8 @@ def _import_images(paths, work_dir, progress):
     return image_dir
 
 
-def make_video(audio, folder, motion=False, subtitles=False, progress_cb=None, timing_file=None):
+def make_video(audio, folder, motion=False, subtitles=False, progress_cb=None, timing_file=None,
+               intro_video=None, focus_points=None, zoom_seconds=18):
     if not os.path.isfile(audio):
         raise ValueError("Файл озвучки не найден. Выберите MP3 заново.")
     paths = list_images(folder)
@@ -229,21 +267,53 @@ def make_video(audio, folder, motion=False, subtitles=False, progress_cb=None, t
     duration = pipeline.audio_duration(audio)
     if duration <= 0:
         raise ValueError("Не удалось определить длину озвучки.")
-    paths, durations = resolve_timing(paths, timing_file, duration)
+    intro_length = intro_duration(intro_video)
+    remaining = duration - intro_length
+    if remaining < len(paths) * 0.3:
+        raise ValueError("Вступительное видео оставляет слишком мало времени для изображений и озвучки.")
+    paths, durations = resolve_timing(paths, timing_file, remaining, intro_length)
+    focus_points = focus_points or {}
+    try:
+        zoom_seconds = float(zoom_seconds)
+    except (TypeError, ValueError):
+        raise ValueError("Скорость приближения должна быть числом.") from None
+    if not math.isfinite(zoom_seconds) or not 6 <= zoom_seconds <= 40:
+        raise ValueError("Время приближения: от 6 до 40 секунд.")
     n = len(paths)
     scenes, position = [], 0.0
+    videos = {}
+    offset = int(bool(intro_video))
+    if intro_video:
+        scenes.append({"index": 0, "start": 0.0, "duration": intro_length})
+        videos[0] = intro_video
+        position = intro_length
+    points = {}
     for i, length in enumerate(durations):
-        scenes.append({"index": i, "start": position, "duration": length})
+        name = os.path.basename(paths[i])
+        try:
+            point = focus_points.get(name, [0.5, 0.5])
+            x, y = float(point[0]), float(point[1])
+        except (TypeError, ValueError, IndexError):
+            raise ValueError(f"Неверная точка фокуса для {name}.") from None
+        if not all(math.isfinite(v) and 0 <= v <= 1 for v in (x, y)):
+            raise ValueError(f"Точка фокуса для {name} должна быть внутри кадра.")
+        points[name] = [x, y]
+        scenes.append({"index": i + offset, "start": position, "duration": length,
+                       "focus": (x, y), "zoom_seconds": zoom_seconds, "zoom": bool(motion)})
         position += length
     timeline_manifest = os.path.join(work_dir, "manual_timing.json")
-    render_state = {"durations": durations, "renderer": "native-nvenc-v1", "transitions": "zoom-slide-v1"}
+    intro_stamp = ({"path": os.path.abspath(intro_video), "size": os.stat(intro_video).st_size,
+                    "mtime_ns": os.stat(intro_video).st_mtime_ns} if intro_video else None)
+    render_state = {"durations": durations, "intro": intro_stamp, "focus": points,
+                    "zoom_seconds": zoom_seconds, "motion": bool(motion),
+                    "renderer": "native-nvenc-v2", "transitions": "zoom-slide-v1"}
     if pipeline.read_json(timeline_manifest) != render_state:
         for name in ("clips", "clips_m", "groups"):
             shutil.rmtree(os.path.join(work_dir, name), ignore_errors=True)
         pipeline.write_json(timeline_manifest, render_state)
     detail = "по таймингу" if timing_file else f"примерно {duration / n:.1f} с на кадр"
     progress("scenes", n, n, f"{n} своих кадров · {detail}")
-    image_dir = _import_images(paths, work_dir, progress)
+    image_dir = _import_images(paths, work_dir, progress, offset=offset)
     output_dir = os.path.join(pipeline.data_dir(), "output")
     os.makedirs(output_dir, exist_ok=True)
     base = os.path.basename(work_dir)
@@ -258,7 +328,7 @@ def make_video(audio, folder, motion=False, subtitles=False, progress_cb=None, t
             raise ValueError("Для субтитров нужен ключ fast-gen или OpenAI для распознавания речи.")
         transcript = pipeline.transcribe(engine, client, audio, work_dir, progress, duration)
         raw = os.path.join(work_dir, "nosubs.mp4")
-        pipeline.assemble_video(scenes, image_dir, {}, audio, work_dir, raw, progress, motion=motion)
+        pipeline.assemble_video(scenes, image_dir, videos, audio, work_dir, raw, progress, motion=motion)
         pipeline.check_cancel()
         progress("subtitles", 0, 1, "накладываю субтитры")
         sub_dir = os.path.join(output_dir, "subtitles")
@@ -269,7 +339,8 @@ def make_video(audio, folder, motion=False, subtitles=False, progress_cb=None, t
         os.replace(result + ".tmp.mp4", result)
         progress("subtitles", 1, 1, "субтитры готовы")
     else:
-        pipeline.assemble_video(scenes, image_dir, {}, audio, work_dir, result, progress, motion=motion)
+        pipeline.assemble_video(scenes, image_dir, videos, audio, work_dir, result, progress, motion=motion)
     pipeline.cleanup_job(work_dir)
     progress("done", 1, 1, f"готово: {result}")
     return result
+

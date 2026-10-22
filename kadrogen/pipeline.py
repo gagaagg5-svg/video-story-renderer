@@ -2176,7 +2176,7 @@ def video_encoder_args():
     return ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p"]
 
 
-def render_scene_clip(img_path, i, duration, out_path):
+def render_scene_clip(img_path, i, duration, out_path, focus=None, zoom_seconds=None, enable_zoom=None):
     if os.path.exists(out_path):
         try:
             if os.path.getmtime(out_path) >= os.path.getmtime(img_path):
@@ -2191,23 +2191,37 @@ def render_scene_clip(img_path, i, duration, out_path):
     still = out_path + ".still.png"
     tmp = out_path + ".tmp.mp4"
     motion = i % 6
+    manual_zoom = enable_zoom is not None
+    animated = bool(enable_zoom) if manual_zoom else motion in (1, 3, 5)
     with Image.open(img_path) as source:
         image = _fit_16_9(source.convert("RGB"))
-        image.resize((W * 2, H * 2) if motion in (1, 3, 5) else (W, H),
+        image.resize((W * 2, H * 2) if animated else (W, H),
                      Image.Resampling.LANCZOS).save(still)
 
     try:
-        if motion == 1:
+        if manual_zoom and animated:
+            fx, fy = focus or (0.5, 0.5)
+            fx, fy = max(0.0, min(1.0, float(fx))), max(0.0, min(1.0, float(fy)))
+            seconds = max(6.0, min(40.0, float(zoom_seconds or 18.0)))
+            if duration <= seconds:
+                # Short scenes finish their zoom at the cut; long scenes move at
+                # a steady speed and gently reverse instead of taking minutes to zoom.
+                zoom = f"1+0.12*(1-cos(PI*on/{frames - 1}))/2"
+            else:
+                zoom = f"1+0.12*(1-cos(PI*on/({FPS}*{seconds:.3f})))/2"
+            x = f"max(0,min(iw-iw/zoom,iw*{fx:.5f}-iw/(2*zoom)))"
+            y = f"max(0,min(ih-ih/zoom,ih*{fy:.5f}-ih/(2*zoom)))"
+        elif motion == 1 and not manual_zoom:
             zoom, x = f"1+0.12*on/{frames - 1}", "(iw-iw/zoom)/2"
-        elif motion == 3:
+        elif motion == 3 and not manual_zoom:
             zoom, x = "1.10", f"(iw-iw/zoom)*(1-on/{frames - 1})"
-        elif motion == 5:
+        elif motion == 5 and not manual_zoom:
             zoom, x = "1.10", f"(iw-iw/zoom)*on/{frames - 1}"
         else:
             zoom, x = None, None
 
         if zoom:
-            vf = (f"zoompan=z='{zoom}':x='{x}':y='(ih-ih/zoom)/2':"
+            vf = (f"zoompan=z='{zoom}':x='{x}':y='{y if manual_zoom else '(ih-ih/zoom)/2'}':"
                   f"d={frames}:s={W}x{H}:fps={FPS},format=yuv420p")
             run_ffmpeg(["-i", still, "-vf", vf, "-frames:v", str(frames),
                         "-an", *video_encoder_args(), tmp])
@@ -2264,7 +2278,9 @@ def assemble_video(scenes, img_dir, videos, audio_path, job_dir, out_mp4, progre
             render_video_clip(videos[i], dur, clip)
         else:
             clip = os.path.join(clips_dir, f"{i:04d}{suffix}.mp4")
-            render_scene_clip(os.path.join(img_dir, f"{i:04d}.png"), i, dur, clip)
+            render_scene_clip(os.path.join(img_dir, f"{i:04d}.png"), i, dur, clip,
+                              focus=s.get("focus"), zoom_seconds=s.get("zoom_seconds"),
+                              enable_zoom=s.get("zoom"))
         return clip
 
     done = 0
@@ -2931,3 +2947,4 @@ if __name__ == "__main__":
     make_video(sys.argv[1], provider=arg("--provider"), mode=arg("--mode", "images"), style_key=arg("--style"),
                use_refs="--refs" in sys.argv, subtitles="--subs" in sys.argv, motion="--motion" in sys.argv,
                fastgen_quality=arg("--quality"))
+

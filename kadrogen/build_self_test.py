@@ -33,9 +33,15 @@ def run(report_path):
                 subprocess.run([pipeline.ffmpeg_bin(), "-y", "-v", "error", "-f", "lavfi", "-i",
                                 "sine=frequency=440:duration=3", str(audio)], check=True,
                                creationflags=pipeline.NO_WINDOW, timeout=30)
+                intro = root / "intro.mp4"
+                subprocess.run([pipeline.ffmpeg_bin(), "-y", "-v", "error", "-f", "lavfi", "-i",
+                                "color=c=green:s=320x180:r=25:d=1", "-c:v", "libx264", str(intro)],
+                               check=True, creationflags=pipeline.NO_WINDOW, timeout=30)
                 timing = root / "timing.csv"
-                timing.write_text("filename,duration_seconds\n002.png,1\n001.png,2\n", encoding="utf-8")
-                output = manual_images.make_video(str(audio), str(images), timing_file=str(timing), motion=True)
+                timing.write_text("filename,duration_seconds\n002.png,1\n001.png,1\n", encoding="utf-8")
+                output = manual_images.make_video(str(audio), str(images), timing_file=str(timing), motion=True,
+                                                  intro_video=str(intro), zoom_seconds=6,
+                                                  focus_points={"001.png": [0.8, 0.2]})
                 info = subprocess.run([pipeline.ffmpeg_bin("ffprobe"), "-v", "error", "-show_entries",
                                        "format=duration:stream=codec_type,width,height", "-of", "json", output],
                                       check=True, capture_output=True, text=True,
@@ -45,10 +51,11 @@ def run(report_path):
                 assert abs(duration - 3.0) < 0.2, data
                 assert any(s.get("width") == 1920 and s.get("height") == 1080 for s in data["streams"]), data
                 assert any(s.get("codec_type") == "audio" for s in data["streams"]), data
-                report.update(ok=True, duration_seconds=duration, checks=["bundled resources", "CSV ordering", "FFmpeg native render", "xfade motion", "Full HD video with audio"])
+                report.update(ok=True, duration_seconds=duration, checks=["bundled resources", "CSV ordering", "opening video", "per-image zoom focus", "xfade motion", "Full HD video with audio"])
             finally:
                 fastgen_api._DATA_DIR = old_data_dir
     except Exception:
         report["error"] = traceback.format_exc()
     Path(report_path).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return 0 if report["ok"] else 1
+

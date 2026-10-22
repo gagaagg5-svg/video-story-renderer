@@ -682,14 +682,17 @@ def run_job(audio, provider, mode, style, use_refs, subtitles=False, motion=Fals
         keep_awake(False)
 
 
-def run_manual_job(audio, folder, motion, subtitles, timing_file=None):
+def run_manual_job(audio, folder, motion, subtitles, timing_file=None,
+                   intro_video=None, focus_points=None, zoom_seconds=18):
     keep_awake(True)
     try:
         with LOCK:
             STATE["job_dir"] = manual_images.job_dir(audio)
             STATE["scenes"] = len(manual_images.list_images(folder))
         result = manual_images.make_video(audio, folder, motion=motion, subtitles=subtitles,
-                                          progress_cb=progress_cb, timing_file=timing_file)
+                                          progress_cb=progress_cb, timing_file=timing_file,
+                                          intro_video=intro_video, focus_points=focus_points,
+                                          zoom_seconds=zoom_seconds)
         with LOCK:
             STATE["result"] = result
     except pipeline.Cancelled:
@@ -1060,7 +1063,8 @@ class Api:
             return {"path": "", "count": 0}
         folder = res[0] if isinstance(res, (list, tuple)) else str(res)
         try:
-            return {"path": folder, "count": len(manual_images.list_images(folder))}
+            names = [os.path.basename(p) for p in manual_images.list_images(folder)]
+            return {"path": folder, "count": len(names), "names": names}
         except ValueError as exc:
             return {"path": folder, "count": 0, "error": str(exc)}
 
@@ -1068,6 +1072,14 @@ class Api:
         res = WINDOW.create_file_dialog(webview.OPEN_DIALOG, allow_multiple=False,
                                         file_types=("Тайминг CSV или DaVinci XML (*.csv;*.xml)", "Все файлы (*.*)"))
         return (res[0] if isinstance(res, (list, tuple)) else str(res)) if res else ""
+
+    def pick_intro_video(self):
+        res = WINDOW.create_file_dialog(webview.OPEN_DIALOG, allow_multiple=False,
+                                        file_types=("Видео (*.mp4;*.mov;*.mkv;*.webm)", "Все файлы (*.*)"))
+        return (res[0] if isinstance(res, (list, tuple)) else str(res)) if res else ""
+
+    def manual_image_preview(self, folder, index):
+        return manual_images.image_preview(folder, index)
 
     def _rewrite_opts(self, opts):
         rw = opts.get("rewrite") or {}
@@ -1194,12 +1206,23 @@ class Api:
             audio = (opts.get("audio") or "").strip().strip('"')
             folder = opts.get("manual_folder") or ""
             timing_file = opts.get("timing_file") or ""
+            intro_video = opts.get("intro_video") or None
+            focus_points = opts.get("focus_points") or {}
+            zoom_seconds = opts.get("zoom_seconds", 18)
             if not os.path.isfile(audio):
                 return {"ok": False, "error": "Выберите файл озвучки MP3."}
             try:
                 images = manual_images.list_images(folder)
                 duration = pipeline.audio_duration(audio)
-                manual_images.resolve_timing(images, timing_file, duration)
+                intro_length = manual_images.intro_duration(intro_video)
+                if duration - intro_length < len(images) * 0.3:
+                    raise ValueError("После вступительного видео не остаётся времени для кадров.")
+                manual_images.resolve_timing(images, timing_file, duration - intro_length, intro_length)
+                zoom_seconds = float(zoom_seconds)
+                if not 6 <= zoom_seconds <= 40:
+                    raise ValueError("Время приближения: от 6 до 40 секунд.")
+                if not isinstance(focus_points, dict):
+                    raise ValueError("Некорректные точки фокуса.")
             except (ValueError, OSError, RuntimeError) as exc:
                 return {"ok": False, "error": str(exc)}
             if opts.get("subtitles") and not (load_cfg().get("fastgen_api_key") or load_cfg().get("openai_api_key")):
@@ -1211,7 +1234,8 @@ class Api:
                               "message": "загружаю свои изображения", "log": [], "result": None,
                               "error": None, "cancelled": False, "started_at": time.time()})
             thread = threading.Thread(target=run_manual_job,
-                                      args=(audio, folder, bool(opts.get("motion")), bool(opts.get("subtitles")), timing_file), daemon=True)
+                                      args=(audio, folder, bool(opts.get("motion")), bool(opts.get("subtitles")),
+                                            timing_file, intro_video, focus_points, zoom_seconds), daemon=True)
             thread.start()
             return {"ok": True}
         audio = (opts.get("audio") or "").strip().strip('"')
@@ -1674,3 +1698,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

@@ -567,11 +567,11 @@ const I18N = {
 let L = 'ru';
 const t = k => I18N[L][k];
 const TTS_PH = {voicegen:'VoiceGen key (Telegram bot)', voicer:'Voicer token', lumean:'Lumean key'};
-let audioPath = "", manualFolder = "", manualCount = 0, timingPath = "", cur = 1, known = new Set(), total = 0, scanTimer = null, source = 'mp3';
+let audioPath = "", manualFolder = "", manualCount = 0, timingPath = "", introVideo = "", manualNames = [], focusPoints = {}, zoomSeconds = 18, focusIndex = 0, cur = 1, known = new Set(), total = 0, scanTimer = null, source = 'mp3';
 const MANUAL_LABELS = {
-  ru:{tile:'Свои изображения',folder:'Папка с кадрами',pick:'Выбрать папку',timing:'Тайминг (необязательно)',timingPick:'Выбрать CSV / XML',timingClear:'Убрать',timingNone:'Поровну по длине MP3',empty:'Выберите папку с PNG, JPG или WEBP. Можно добавить CSV с длительностью каждого кадра или XML таймлайна DaVinci (FCP 7). Без тайминга кадры распределяются поровну по длине MP3.',
+  ru:{tile:'Свои изображения',folder:'Папка с кадрами',pick:'Выбрать папку',timing:'Тайминг (необязательно)',timingPick:'Выбрать CSV / XML',timingClear:'Убрать',timingNone:'Поровну по оставшейся длине MP3',intro:'Видео в начале',introPick:'Выбрать видео',introNone:'Без вступительного видео',focus:'Точка приближения',focusTip:'Выберите кадр и нажмите на объект, который должен оставаться в фокусе. Вступление идёт с начала MP3; его исходный звук отключается.',zoomSpeed:'Время приближения',zoomHint:'Для длинного кадра приближение плавно сменится отдалением и повторится.',empty:'Выберите папку с PNG, JPG или WEBP. Можно добавить вступительное видео и CSV с длительностью кадров либо XML таймлайна DaVinci (FCP 7). Время вступления вычитается из MP3; CSV должен содержать длительности оставшихся кадров.',
       count:'кадров',service:'Свои изображения · без генерации', key:'Ключ OpenAI для субтитров (не нужен без субтитров)', queue:'Очередь не применяется к режиму своих изображений.'},
-  en:{tile:'My images',folder:'Image folder',pick:'Choose folder',timing:'Timing (optional)',timingPick:'Choose CSV / XML',timingClear:'Remove',timingNone:'Evenly across MP3',empty:'Choose a folder of PNG, JPG or WEBP images. Add a CSV of frame durations or a DaVinci FCP 7 timeline XML. Without timing, frames are evenly spaced across the MP3.',
+  en:{tile:'My images',folder:'Image folder',pick:'Choose folder',timing:'Timing (optional)',timingPick:'Choose CSV / XML',timingClear:'Remove',timingNone:'Evenly across the rest of the MP3',intro:'Opening video',introPick:'Choose video',introNone:'No opening video',focus:'Zoom focus',focusTip:'Choose an image and click the subject to keep it in focus. The intro starts with the MP3; its source audio is muted.',zoomSpeed:'Zoom time',zoomHint:'Long images gently zoom back out and repeat.',empty:'Choose PNG, JPG or WEBP images, an optional opening video, and a CSV of remaining image durations or a DaVinci FCP 7 XML timeline. The video time is subtracted from the MP3.',
       count:'images',service:'My images · no generation',key:'OpenAI key for subtitles (not needed without subtitles)',queue:'Queue is unavailable for my images.'}
 };
 const mt = k => MANUAL_LABELS[L][k];
@@ -667,7 +667,7 @@ async function pick() { const p = await pywebview.api.pick_file(); if (p) setAud
 async function pickImagesFolder() {
   const r = await pywebview.api.pick_images_folder();
   if (!r.path) return;
-  manualFolder = r.path; manualCount = r.count || 0;
+  manualFolder = r.path; manualCount = r.count || 0; manualNames = r.names || []; focusPoints = {}; focusIndex = 0;
   $('s_prep').textContent = r.error || '';
   renderAccess();
 }
@@ -676,6 +676,31 @@ async function pickTimingFile() {
   if (p) { timingPath = p; renderAccess(); }
 }
 function clearTimingFile() { timingPath = ''; renderAccess(); }
+async function pickIntroVideo() { const p = await pywebview.api.pick_intro_video(); if (p) { introVideo = p; renderAccess(); } }
+function clearIntroVideo() { introVideo = ''; renderAccess(); }
+async function loadFocusPreview() {
+  if (!manualNames.length || !manualFolder) return;
+  const selected = focusIndex;
+  try {
+    const r = await pywebview.api.manual_image_preview(manualFolder, selected);
+    if (selected !== focusIndex || !$('focus_preview')) return;
+    $('focus_preview').src = r.src;
+    showFocusDot();
+  } catch (e) { if ($('focus_status')) $('focus_status').textContent = String(e); }
+}
+function showFocusDot() {
+  const dot = $('focus_dot'), name = manualNames[focusIndex];
+  if (!dot || !name) return;
+  const point = focusPoints[name] || [0.5, 0.5];
+  dot.style.left = (point[0] * 100) + '%'; dot.style.top = (point[1] * 100) + '%';
+}
+function chooseFocus(event) {
+  const rect = event.currentTarget.getBoundingClientRect(), name = manualNames[focusIndex];
+  if (!name) return;
+  focusPoints[name] = [Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)),
+                       Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height))];
+  showFocusDot();
+}
 let queueMode = false;
 async function startAll() {
   await saveKeys(); $('s_prep').textContent = ''; $('s_prep2').textContent = '';
@@ -714,6 +739,8 @@ function renderReview(script) {
     $('rv_sum').innerHTML = `<div><span>${mt('service')}</span></div><div><span>${t('file_lbl')}</span><span>${esc(audioPath)}</span></div>` +
       `<div><span>${mt('folder')}</span><span>${esc(manualFolder)} · ${manualCount} ${mt('count')}</span></div>` +
       `<div><span>${mt('timing')}</span><span>${timingPath ? esc(timingPath) : mt('timingNone')}</span></div>` +
+      `<div><span>${mt('intro')}</span><span>${introVideo ? esc(introVideo) : mt('introNone')}</span></div>` +
+      `<div><span>${mt('zoomSpeed')}</span><span>${zoomSeconds} с</span></div>` +
       `<div><span>${t('o_motion')}</span><span>${$('use_motion').checked ? t('rv_yes') : t('rv_no')}</span></div>` +
       `<div><span>${t('o_subs')}</span><span>${$('use_subs').checked ? t('rv_yes') : t('rv_no')}</span></div>`;
     $('rv_script_panel').style.display = 'none';
@@ -989,11 +1016,17 @@ function renderAccess() {
   if (manualMode()) {
     H.push(row(t('file_lbl'), '', `<input type="text" id="file_name" readonly value="${esc(audioPath)}" placeholder="${esc(t('drop_hint'))}"><button onclick="pick()">${t('pick')}</button>`));
     H.push(row(mt('folder'), '', `<input type="text" readonly value="${esc(manualFolder)}" placeholder="PNG / JPG / WEBP"><button onclick="pickImagesFolder()">${mt('pick')}</button><span class="note">${manualCount} ${mt('count')}</span>`));
+    H.push(row(mt('intro'), '', `<input type="text" readonly value="${esc(introVideo)}" placeholder="${mt('introNone')}"><button onclick="pickIntroVideo()">${mt('introPick')}</button>${introVideo ? `<button class="ghost" onclick="clearIntroVideo()">${mt('timingClear')}</button>` : ''}`));
     H.push(row(mt('timing'), '', `<input type="text" readonly value="${esc(timingPath)}" placeholder="${mt('timingNone')}"><button onclick="pickTimingFile()">${mt('timingPick')}</button>${timingPath ? `<button class="ghost" onclick="clearTimingFile()">${mt('timingClear')}</button>` : ''}`));
+    if (manualNames.length) H.push(row(mt('focus'), '', `<select class="sel" id="focus_frame">${manualNames.map((name, i) => `<option value="${i}"${i === focusIndex ? ' selected' : ''}>${esc(name)}</option>`).join('')}</select>`));
+    if (manualNames.length) H.push(`<div style="padding:12px 20px;max-width:570px"><div class="note">${mt('focusTip')}</div><div id="focus_area" onclick="chooseFocus(event)" style="position:relative;display:inline-block;max-width:100%;margin-top:8px;cursor:crosshair"><img id="focus_preview" style="display:block;max-width:100%;max-height:360px"><span id="focus_dot" style="position:absolute;width:15px;height:15px;border:2px solid white;border-radius:50%;background:#09aeca;box-shadow:0 0 3px #000;transform:translate(-50%,-50%);pointer-events:none"></span></div><div class="note" id="focus_status"></div></div>`);
+    H.push(row(mt('zoomSpeed'), '', `<input id="manual_zoom_speed" type="range" min="6" max="40" step="1" value="${zoomSeconds}"><span id="manual_zoom_value">${zoomSeconds} с</span><span class="note">${mt('zoomHint')}</span>`));
     if ($('use_subs').checked) H.push(row(mt('key'), 'https://platform.openai.com/api-keys',
       keyIn('k_manual_openai', 'openai', 0, single.openai || '', t('ph_key')) + eye('k_manual_openai')));
     H.push(`<div class="note" style="padding:12px 20px">${mt('empty')}</div>`);
     $('dropzone').innerHTML = `<div class="alist-in">${H.join('')}</div>`;
+    if ($('focus_frame')) { $('focus_frame').addEventListener('change', e => { focusIndex = +e.target.value; loadFocusPreview(); }); loadFocusPreview(); }
+    $('manual_zoom_speed').addEventListener('input', e => { zoomSeconds = +e.target.value; $('manual_zoom_value').textContent = zoomSeconds + ' с'; });
     if ($('k_manual_openai')) $('k_manual_openai').addEventListener('change', e => {
       single.openai = e.target.value.trim();
       if (single.openai && !single.openai.includes('•')) pywebview.api.save_config({openai: single.openai});
@@ -1214,7 +1247,7 @@ async function loadVoices() {
   renderVoiceList(r.voices.map(v => ({id: v.id, name: `${v.name}${v.lang ? ' · ' + v.lang : ''}${v.gender ? ' · ' + v.gender : ''}`})));
   if (st) { st.textContent = r.voices.length ? t('voices_n').replace('{n}', r.voices.length) : t('voices_none'); st.className = 'status st ok'; }
 }
-function opts() { syncAll(); return {audio: audioPath, manual_folder: manualFolder, timing_file: timingPath, source, script: F.script, tts, voice: F.voice, providers: provs(), mode: mode(), use_refs: fgq() === 'quality', subtitles: $('use_subs').checked, motion: $('use_motion').checked, hd: $('use_hd').checked, qa: $('use_qa').checked, speed: $('use_speed').checked, video_first: vf(), style: styleKey, custom_style: customStyle(),
+function opts() { syncAll(); return {audio: audioPath, manual_folder: manualFolder, timing_file: timingPath, intro_video: introVideo, focus_points: focusPoints, zoom_seconds: zoomSeconds, source, script: F.script, tts, voice: F.voice, providers: provs(), mode: mode(), use_refs: fgq() === 'quality', subtitles: $('use_subs').checked, motion: $('use_motion').checked, hd: $('use_hd').checked, qa: $('use_qa').checked, speed: $('use_speed').checked, video_first: vf(), style: styleKey, custom_style: customStyle(),
   rewrite: {on: rwOn(), source: rwSrc, url: F.rwUrl, text: F.rwText, engine: rwEngine, words: F.rwWords, language: F.rwLang}}; }
 
 // ===== фоновая музыка: плейлист из папки music, ползунок 0..100 (середина — тихо, низ — выключено),
@@ -1242,3 +1275,4 @@ window.addEventListener('pywebviewready', () => loadConfig(false));
 </script>
 </body>
 </html>
+
