@@ -19,7 +19,7 @@ ns = {"os": os, "subprocess": subprocess, "threading": threading, "NO_WINDOW": 0
       "W": 640, "H": 360, "FPS": 25, "EDGE_CROP": 0.035, "TRANSITION": 0.5,
       "TRANSITIONS": ["zoomin", "slideleft", "slideright"],
       "_NVENC_LOCK": threading.Lock(), "_NVENC_AVAILABLE": None,
-      "app_dir": lambda: str(root), "log": lambda message: print(message)}
+      "app_dir": lambda: str(root), "log": lambda message: None}
 exec(compile(ast.Module(body=nodes, type_ignores=[]), "pipeline.py", "exec"), ns)
 
 def run_ffmpeg(args):
