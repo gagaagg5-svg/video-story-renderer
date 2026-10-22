@@ -78,6 +78,32 @@ def main():
 <clipitem><start>180</start><end>270</end><file id="c"><name>2.png</name></file></clipitem>
 </track></video></media></sequence></xmeml>''', encoding="utf-8")
     assert manual.resolve_timing(images, str(xml), 9.0) == (ordered, durations)
+    # Full timeline: opening video occupies 00:00–00:02 and images follow it.
+    intro = root / "intro.mp4"
+    intro.write_bytes(b"intro")
+    manual.intro_duration = lambda path: 2.0 if path else 0.0
+    full_csv = root / "full_timing.csv"
+    full_csv.write_text("filename,duration_seconds\nintro.mp4,2\n10.jpg,2\n1.webp,2\n2.png,3\n",
+                        encoding="utf-8")
+    image_order, image_durations, opening = manual.resolve_full_timing(
+        images, str(full_csv), 9.0, str(intro))
+    assert image_order == ordered and image_durations == [2.0, 2.0, 3.0] and opening == 2.0
+    full_xml = root / "full_timeline.xml"
+    full_xml.write_text('''<?xml version="1.0"?><xmeml version="5"><sequence><rate><timebase>30</timebase><ntsc>FALSE</ntsc></rate><media><video><track>
+<clipitem><start>0</start><end>60</end><file id="v"><name>intro.mp4</name></file></clipitem>
+<clipitem><start>60</start><end>120</end><file id="a"><name>10.jpg</name></file></clipitem>
+<clipitem><start>120</start><end>180</end><file id="b"><name>1.webp</name></file></clipitem>
+<clipitem><start>180</start><end>270</end><file id="c"><name>2.png</name></file></clipitem>
+</track></video></media></sequence></xmeml>''', encoding="utf-8")
+    assert manual.resolve_full_timing(images, str(full_xml), 9.0, str(intro)) == (
+        ordered, [2.0, 2.0, 3.0], 2.0)
+    full_csv.write_text(full_csv.read_text(encoding="utf-8").replace("intro.mp4,2", "intro.mp4,3"),
+                        encoding="utf-8")
+    try:
+        manual.resolve_full_timing(images, str(full_csv), 9.0, str(intro))
+        raise AssertionError("Full-timeline mismatch was accepted")
+    except ValueError as exc:
+        assert "озвучка" in str(exc)
     # A stale partially rendered clip must be dropped if the timing changes.
     clip_dir = Path(manual.job_dir(str(audio))) / "clips"
     clip_dir.mkdir(exist_ok=True)
@@ -102,3 +128,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

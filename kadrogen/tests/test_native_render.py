@@ -3,11 +3,14 @@ import ast
 import concurrent.futures as cf
 from pathlib import Path
 import os
+import random
+import shutil
 import subprocess
 import tempfile
 import threading
+from types import SimpleNamespace
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 root = Path(__file__).resolve().parents[1]
 source = (root / "pipeline.py").read_text(encoding="utf-8")
@@ -19,7 +22,7 @@ functions = {"ffmpeg_bin", "video_encoder_args", "_fit_16_9", "render_scene_clip
 nodes = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in functions]
 ns = {"os": os, "subprocess": subprocess, "threading": threading, "cf": cf, "NO_WINDOW": 0,
       "W": 640, "H": 360, "FPS": 25, "EDGE_CROP": 0.035, "TRANSITION": 0.5,
-      "TRANSITIONS": ["zoomin", "slideleft", "slideright"], "XFADE_GROUP": 30,
+      "TRANSITIONS": ["zoomin", "slideleft", "slideright", "slideup", "slidedown"], "XFADE_GROUP": 30,
       "_NVENC_LOCK": threading.Lock(), "_NVENC_AVAILABLE": None,
       "app_dir": lambda: str(root), "log": lambda message: None, "check_cancel": lambda: None}
 exec(compile(ast.Module(body=nodes, type_ignores=[]), "pipeline.py", "exec"), ns)
@@ -30,14 +33,14 @@ def run_ffmpeg(args):
 ns["run_ffmpeg"] = run_ffmpeg
 with tempfile.TemporaryDirectory() as scratch:
     clips = []
-    for i in range(4):
+    for i in range(6):
         image = Path(scratch) / f"image{i}.png"
         Image.new("RGB", (800, 450), (60 * i, 100, 150)).save(image)
         clip = Path(scratch) / f"clip{i}.mp4"
         ns["render_scene_clip"](str(image), i, 1.3, str(clip))
         clips.append(str(clip))
-    args, filt = ns["xfade_chain"](clips, [0.8] * 4)
-    assert all(effect in filt for effect in ("zoomin", "slideleft", "slideright")), filt
+    args, filt = ns["xfade_chain"](clips, [0.8] * 6)
+    assert all(effect in filt for effect in ("zoomin", "slideleft", "slideright", "slideup", "slidedown")), filt
     output = Path(scratch) / "xfade.mp4"
     run_ffmpeg(args + ["-filter_complex", filt, "-map", "[vout]", "-an", "-c:v", "libx264", str(output)])
     assert output.stat().st_size > 1000
@@ -64,5 +67,25 @@ with tempfile.TemporaryDirectory() as scratch:
          "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(result)],
         text=True).strip())
     assert 3.9 <= duration <= 4.1, duration
+    source = (root / "manual_images.py").read_text(encoding="utf-8")
+    manual_tree = ast.parse(source)
+    effect = next(node for node in manual_tree.body if isinstance(node, ast.FunctionDef)
+                  and node.name == "apply_film_effect")
+    mn = {"os": os, "random": random, "shutil": shutil, "Image": Image,
+          "ImageDraw": ImageDraw,
+          "pipeline": SimpleNamespace(W=640, H=360, FPS=25, run_ffmpeg=run_ffmpeg,
+                                      check_cancel=lambda: None,
+                                      video_encoder_args=ns["video_encoder_args"])}
+    exec(compile(ast.Module(body=[effect], type_ignores=[]), "manual_images.py", "exec"), mn)
+    mn["apply_film_effect"](str(result), "retro", scratch)
+    assert result.stat().st_size > 1000
+    film_probe = subprocess.check_output(
+        [ffmpeg.replace("ffmpeg.exe", "ffprobe.exe") if ffmpeg.endswith("ffmpeg.exe") else "ffprobe",
+         "-v", "error", "-show_entries", "format=duration:stream=codec_type",
+         "-of", "json", str(result)], text=True)
+    import json
+    film_data = json.loads(film_probe)
+    assert abs(float(film_data["format"]["duration"]) - duration) < 0.15
+    assert any(stream["codec_type"] == "audio" for stream in film_data["streams"])
     print("Native render and requested transitions passed")
 

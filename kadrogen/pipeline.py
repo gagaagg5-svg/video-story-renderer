@@ -2251,7 +2251,7 @@ def render_video_clip(src_mp4, duration, out_path):
     return out_path
 
 
-TRANSITIONS = ["zoomin", "slideleft", "slideright"]
+TRANSITIONS = ["zoomin", "slideleft", "slideright", "slideup", "slidedown"]
 
 
 def assemble_video(scenes, img_dir, videos, audio_path, job_dir, out_mp4, progress, motion=False):

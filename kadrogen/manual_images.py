@@ -9,17 +9,19 @@ import csv
 import io
 import math
 import os
+import random
 import re
 import shutil
 from urllib.parse import unquote, urlparse
 import xml.etree.ElementTree as ET
 
-from PIL import Image, ImageOps, UnidentifiedImageError
+from PIL import Image, ImageDraw, ImageOps, UnidentifiedImageError
 
 import pipeline
 
 
 EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm"}
 
 
 def _read_csv_timing(file_path):
@@ -51,7 +53,7 @@ def _read_csv_timing(file_path):
     return result
 
 
-def _read_xml_timing(file_path):
+def _read_xml_timing(file_path, include_video=False):
     try:
         root = ET.parse(file_path).getroot()
     except ET.ParseError as exc:
@@ -87,7 +89,8 @@ def _read_xml_timing(file_path):
             name = name or clip.findtext("name")
             if name and name.startswith("file:"):
                 name = unquote(urlparse(name).path)
-            if not name or os.path.splitext(name)[1].lower() not in EXTENSIONS:
+            accepted = EXTENSIONS | VIDEO_EXTENSIONS if include_video else EXTENSIONS
+            if not name or os.path.splitext(name)[1].lower() not in accepted:
                 continue
             try:
                 start = int(clip.findtext("start"))
@@ -102,9 +105,9 @@ def _read_xml_timing(file_path):
     return tracks, fps
 
 
-def resolve_timing(paths, timing_file, audio_duration, intro_duration=0.0):
+def resolve_timing(paths, timing_file, audio_duration, intro_duration=0.0, items_override=None):
     """Return images in timeline order with durations; enforce one continuous image per clip."""
-    if not timing_file:
+    if not timing_file and items_override is None:
         duration = audio_duration / len(paths)
         if duration < 0.3:
             raise ValueError("Изображений слишком много для длины озвучки: на кадр нужно хотя бы 0,3 секунды.")
@@ -112,7 +115,9 @@ def resolve_timing(paths, timing_file, audio_duration, intro_duration=0.0):
     if not os.path.isfile(timing_file):
         raise ValueError("Файл тайминга не найден. Выберите CSV или XML снова.")
     ext = os.path.splitext(timing_file)[1].lower()
-    if ext == ".csv":
+    if items_override is not None:
+        items = items_override
+    elif ext == ".csv":
         raw = _read_csv_timing(timing_file)
         try:
             items = [(name, float(value.replace(",", "."))) for name, value in raw]
@@ -160,11 +165,70 @@ def resolve_timing(paths, timing_file, audio_duration, intro_duration=0.0):
     return ordered, durations
 
 
+def resolve_full_timing(paths, timing_file, audio_duration, intro_video=None):
+    """Interpret the first video as part of the same 00:00-based timeline."""
+    original_intro = intro_duration(intro_video)
+    if not timing_file:
+        if audio_duration - original_intro < len(paths) * 0.3:
+            raise ValueError("После вступительного видео не остаётся времени для кадров.")
+        images, durations = resolve_timing(paths, None, audio_duration - original_intro)
+        return images, durations, original_intro
+    if not os.path.isfile(timing_file):
+        raise ValueError("Файл тайминга не найден. Выберите CSV или XML снова.")
+    ext = os.path.splitext(timing_file)[1].lower()
+    items, timed_intro = None, None
+    if ext == ".csv":
+        raw = _read_csv_timing(timing_file)
+        if len(raw) == len(paths) + 1:
+            if not intro_video:
+                raise ValueError("В CSV есть строка вступления, но видео не выбрано.")
+            name, value = raw.pop(0)
+            if name and os.path.basename(name).casefold() != os.path.basename(intro_video).casefold():
+                raise ValueError("Первой строкой CSV должно быть выбранное вступительное видео.")
+            try:
+                timed_intro = float(value.replace(",", "."))
+            except ValueError:
+                raise ValueError("CSV: длительность вступления должна быть числом в секундах.") from None
+            try:
+                items = [(n, float(d.replace(",", "."))) for n, d in raw]
+            except ValueError:
+                raise ValueError("CSV: длительности кадров должны быть числами в секундах.") from None
+    elif ext == ".xml" and intro_video:
+        tracks, fps = _read_xml_timing(timing_file, include_video=True)
+        names = {os.path.basename(p).casefold() for p in paths}
+        video_name = os.path.basename(intro_video).casefold()
+        candidates = [c for t in tracks
+                      for c in [sorted(t, key=lambda x: x[1])]
+                      if len(c) == len(paths) + 1
+                      and {os.path.basename(x[0]).casefold() for x in c[1:]} == names
+                      and os.path.basename(c[0][0]).casefold() == video_name]
+        if len(candidates) > 1:
+            raise ValueError("XML: найдено несколько дорожек с выбранным вступлением и кадрами.")
+        if candidates:
+            clips = candidates[0]
+            if clips[0][1] != 0 or any(end <= start or
+                    (i and start != clips[i - 1][2])
+                    for i, (_, start, end) in enumerate(clips)):
+                raise ValueError("XML: видео и изображения должны идти подряд, начиная с 00:00.")
+            timed_intro = clips[0][2] / fps
+            items = [(name, (end - start) / fps) for name, start, end in clips[1:]]
+    if ext not in (".xml", ".csv"):
+        raise ValueError("Тайминг: поддерживаются только CSV и DaVinci FCP 7 XML.")
+    intro_length = timed_intro if timed_intro is not None else original_intro
+    if intro_video and (not math.isfinite(intro_length) or intro_length < 0.3):
+        raise ValueError("Длительность вступления должна быть не меньше 0,3 секунды.")
+    if audio_duration - intro_length < len(paths) * 0.3:
+        raise ValueError("Вступление оставляет слишком мало времени для кадров и озвучки.")
+    images, durations = resolve_timing(paths, timing_file, audio_duration - intro_length,
+                                       intro_length, items_override=items)
+    return images, durations, intro_length
+
+
 def intro_duration(path):
     """A silent introductory video runs under the MP3 from the start."""
     if not path:
         return 0.0
-    if not os.path.isfile(path) or os.path.splitext(path)[1].lower() not in {".mp4", ".mov", ".mkv", ".webm"}:
+    if not os.path.isfile(path) or os.path.splitext(path)[1].lower() not in VIDEO_EXTENSIONS:
         raise ValueError("Для вступления выберите существующий MP4, MOV, MKV или WEBM.")
     try:
         result = pipeline.audio_duration(path)
@@ -193,6 +257,49 @@ def image_preview(folder, index):
         image.save(data, format="JPEG", quality=80)
     return {"name": os.path.basename(paths[index]),
             "src": "data:image/jpeg;base64," + base64.b64encode(data.getvalue()).decode("ascii")}
+
+
+def apply_film_effect(video_path, strength, work_dir):
+    """Sparse animated dust/scratches plus subtle temporal grain."""
+    if strength not in ("light", "retro"):
+        raise ValueError("Неизвестный эффект плёнки.")
+    dust_dir = os.path.join(work_dir, "film_dust")
+    shutil.rmtree(dust_dir, ignore_errors=True)
+    os.makedirs(dust_dir)
+    output = video_path + ".film.tmp.mp4"
+    try:
+        for frame in range(100):
+            pipeline.check_cancel()
+            rng = random.Random(42319 + frame)
+            image = Image.new("RGBA", (480, 270))
+            draw = ImageDraw.Draw(image)
+            for _ in range(9 if strength == "light" else 23):
+                x, y = rng.randrange(480), rng.randrange(270)
+                radius = rng.choice((1, 1, 2))
+                value = rng.choice((20, 235, 250))
+                draw.ellipse((x, y, x + radius, y + radius),
+                             fill=(value, value, value, rng.randrange(30, 95)))
+            if strength == "retro" and rng.random() < 0.24:
+                x = rng.randrange(20, 460)
+                y = rng.randrange(0, 180)
+                draw.line((x, y, x + rng.randrange(-3, 4), min(270, y + rng.randrange(35, 180))),
+                          fill=(230, 230, 220, rng.randrange(22, 58)), width=1)
+            image.save(os.path.join(dust_dir, f"dust_{frame:03d}.png"))
+        noise = 5 if strength == "light" else 9
+        filters = (f"[0:v]noise=alls={noise}:allf=t+u[base];"
+                   f"[1:v]format=rgba,scale={pipeline.W}:{pipeline.H}:flags=bilinear[dust];"
+                   "[base][dust]overlay=shortest=1:format=auto,format=yuv420p[v]")
+        pipeline.run_ffmpeg(["-i", video_path, "-stream_loop", "-1", "-framerate", str(pipeline.FPS),
+                             "-i", os.path.join(dust_dir, "dust_%03d.png"),
+                             "-filter_complex", filters, "-map", "[v]", "-map", "0:a:0",
+                             *pipeline.video_encoder_args(), "-c:a", "copy",
+                             "-movflags", "+faststart", output])
+        pipeline.check_cancel()
+        os.replace(output, video_path)
+    finally:
+        shutil.rmtree(dust_dir, ignore_errors=True)
+        if os.path.exists(output):
+            os.remove(output)
 
 
 def _natural_key(path):
@@ -256,7 +363,7 @@ def _import_images(paths, work_dir, progress, offset=0):
 
 
 def make_video(audio, folder, motion=False, subtitles=False, progress_cb=None, timing_file=None,
-               intro_video=None, focus_points=None, zoom_seconds=18):
+               intro_video=None, focus_points=None, zoom_seconds=18, film_effect="none"):
     if not os.path.isfile(audio):
         raise ValueError("Файл озвучки не найден. Выберите MP3 заново.")
     paths = list_images(folder)
@@ -267,11 +374,7 @@ def make_video(audio, folder, motion=False, subtitles=False, progress_cb=None, t
     duration = pipeline.audio_duration(audio)
     if duration <= 0:
         raise ValueError("Не удалось определить длину озвучки.")
-    intro_length = intro_duration(intro_video)
-    remaining = duration - intro_length
-    if remaining < len(paths) * 0.3:
-        raise ValueError("Вступительное видео оставляет слишком мало времени для изображений и озвучки.")
-    paths, durations = resolve_timing(paths, timing_file, remaining, intro_length)
+    paths, durations, intro_length = resolve_full_timing(paths, timing_file, duration, intro_video)
     focus_points = focus_points or {}
     try:
         zoom_seconds = float(zoom_seconds)
@@ -279,6 +382,8 @@ def make_video(audio, folder, motion=False, subtitles=False, progress_cb=None, t
         raise ValueError("Скорость приближения должна быть числом.") from None
     if not math.isfinite(zoom_seconds) or not 6 <= zoom_seconds <= 40:
         raise ValueError("Время приближения: от 6 до 40 секунд.")
+    if film_effect not in ("none", "light", "retro"):
+        raise ValueError("Неизвестный эффект плёнки.")
     n = len(paths)
     scenes, position = [], 0.0
     videos = {}
@@ -304,14 +409,14 @@ def make_video(audio, folder, motion=False, subtitles=False, progress_cb=None, t
     timeline_manifest = os.path.join(work_dir, "manual_timing.json")
     intro_stamp = ({"path": os.path.abspath(intro_video), "size": os.stat(intro_video).st_size,
                     "mtime_ns": os.stat(intro_video).st_mtime_ns} if intro_video else None)
-    render_state = {"durations": durations, "intro": intro_stamp, "focus": points,
+    render_state = {"durations": durations, "intro": intro_stamp, "intro_length": intro_length, "focus": points,
                     "zoom_seconds": zoom_seconds, "motion": bool(motion),
                     "renderer": "native-nvenc-v2", "transitions": "zoom-slide-v1"}
     if pipeline.read_json(timeline_manifest) != render_state:
         for name in ("clips", "clips_m", "groups"):
             shutil.rmtree(os.path.join(work_dir, name), ignore_errors=True)
         pipeline.write_json(timeline_manifest, render_state)
-    detail = "по таймингу" if timing_file else f"примерно {duration / n:.1f} с на кадр"
+    detail = "по таймингу от 00:00" if timing_file else f"примерно {(duration - intro_length) / n:.1f} с на кадр"
     progress("scenes", n, n, f"{n} своих кадров · {detail}")
     image_dir = _import_images(paths, work_dir, progress, offset=offset)
     output_dir = os.path.join(pipeline.data_dir(), "output")
@@ -340,6 +445,9 @@ def make_video(audio, folder, motion=False, subtitles=False, progress_cb=None, t
         progress("subtitles", 1, 1, "субтитры готовы")
     else:
         pipeline.assemble_video(scenes, image_dir, videos, audio, work_dir, result, progress, motion=motion)
+    if film_effect != "none":
+        progress("render", 0, 0, "накладываю частицы старой плёнки")
+        apply_film_effect(result, film_effect, work_dir)
     pipeline.cleanup_job(work_dir)
     progress("done", 1, 1, f"готово: {result}")
     return result

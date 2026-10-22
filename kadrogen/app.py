@@ -683,7 +683,7 @@ def run_job(audio, provider, mode, style, use_refs, subtitles=False, motion=Fals
 
 
 def run_manual_job(audio, folder, motion, subtitles, timing_file=None,
-                   intro_video=None, focus_points=None, zoom_seconds=18):
+                   intro_video=None, focus_points=None, zoom_seconds=18, film_effect="none"):
     keep_awake(True)
     try:
         with LOCK:
@@ -692,7 +692,7 @@ def run_manual_job(audio, folder, motion, subtitles, timing_file=None,
         result = manual_images.make_video(audio, folder, motion=motion, subtitles=subtitles,
                                           progress_cb=progress_cb, timing_file=timing_file,
                                           intro_video=intro_video, focus_points=focus_points,
-                                          zoom_seconds=zoom_seconds)
+                                          zoom_seconds=zoom_seconds, film_effect=film_effect)
         with LOCK:
             STATE["result"] = result
     except pipeline.Cancelled:
@@ -1209,18 +1209,18 @@ class Api:
             intro_video = opts.get("intro_video") or None
             focus_points = opts.get("focus_points") or {}
             zoom_seconds = opts.get("zoom_seconds", 18)
+            film_effect = opts.get("film_effect") or "none"
             if not os.path.isfile(audio):
                 return {"ok": False, "error": "Выберите файл озвучки MP3."}
             try:
                 images = manual_images.list_images(folder)
                 duration = pipeline.audio_duration(audio)
-                intro_length = manual_images.intro_duration(intro_video)
-                if duration - intro_length < len(images) * 0.3:
-                    raise ValueError("После вступительного видео не остаётся времени для кадров.")
-                manual_images.resolve_timing(images, timing_file, duration - intro_length, intro_length)
+                manual_images.resolve_full_timing(images, timing_file, duration, intro_video)
                 zoom_seconds = float(zoom_seconds)
                 if not 6 <= zoom_seconds <= 40:
                     raise ValueError("Время приближения: от 6 до 40 секунд.")
+                if film_effect not in ("none", "light", "retro"):
+                    raise ValueError("Неизвестный эффект плёнки.")
                 if not isinstance(focus_points, dict):
                     raise ValueError("Некорректные точки фокуса.")
             except (ValueError, OSError, RuntimeError) as exc:
@@ -1235,7 +1235,7 @@ class Api:
                               "error": None, "cancelled": False, "started_at": time.time()})
             thread = threading.Thread(target=run_manual_job,
                                       args=(audio, folder, bool(opts.get("motion")), bool(opts.get("subtitles")),
-                                            timing_file, intro_video, focus_points, zoom_seconds), daemon=True)
+                                            timing_file, intro_video, focus_points, zoom_seconds, film_effect), daemon=True)
             thread.start()
             return {"ok": True}
         audio = (opts.get("audio") or "").strip().strip('"')
