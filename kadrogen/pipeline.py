@@ -2149,54 +2149,78 @@ def _fit_16_9(im):
     return im
 
 
+_NVENC_AVAILABLE = None
+_NVENC_LOCK = threading.Lock()
+
+
+def video_encoder_args():
+    """Probe the actual FFmpeg + driver once; fall back to CPU if NVENC cannot encode."""
+    global _NVENC_AVAILABLE
+    with _NVENC_LOCK:
+        if _NVENC_AVAILABLE is None:
+            try:
+                probe = subprocess.run(
+                    [ffmpeg_bin(), "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+                     "-i", "color=c=black:s=64x64:r=25:d=0.08", "-frames:v", "1",
+                     "-c:v", "h264_nvenc", "-preset", "p4", "-f", "null", os.devnull],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                    creationflags=NO_WINDOW, timeout=15,
+                )
+                _NVENC_AVAILABLE = probe.returncode == 0
+            except (OSError, subprocess.TimeoutExpired):
+                _NVENC_AVAILABLE = False
+            log("Кодирование: NVIDIA NVENC" if _NVENC_AVAILABLE else "Кодирование: процессор (libx264)")
+    if _NVENC_AVAILABLE:
+        return ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", "20",
+                "-b:v", "0", "-pix_fmt", "yuv420p"]
+    return ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p"]
+
+
 def render_scene_clip(img_path, i, duration, out_path):
     if os.path.exists(out_path):
         try:
             if os.path.getmtime(out_path) >= os.path.getmtime(img_path):
                 return out_path
-            os.remove(out_path)  # картинку перерисовали позже клипа — клип устарел
+            os.remove(out_path)
         except OSError:
             return out_path
     duration = max(0.3, float(duration))
     from PIL import Image
 
-    path = kenburns_path(i, duration)
-    tmp = out_path + ".tmp.mp4"
-    im = _fit_16_9(Image.open(img_path).convert("RGB"))
-    if path is None:
-        still = out_path + ".still.png"
-        im.resize((W, H), Image.LANCZOS).save(still)
-        run_ffmpeg(["-loop", "1", "-framerate", str(FPS), "-i", still, "-t", f"{duration:.3f}", "-r", str(FPS),
-                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", "-an", tmp])
-        os.remove(still)
-        os.replace(tmp, out_path)
-        return out_path
     frames = max(2, int(round(duration * FPS)))
-    BW, BH = W * 2, H * 2
-    im = im.resize((BW, BH), Image.LANCZOS)
-    cmd = [ffmpeg_bin(), "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}",
-           "-r", str(FPS), "-i", "-", "-t", f"{duration:.3f}",
-           "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", "-an", tmp]
-    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=NO_WINDOW)
-    try:
-        for n in range(frames):
-            if n % 25 == 0:
-                check_cancel()
-            z, cx, cy = path(n / FPS)
-            ww, wh = BW / z, BH / z
-            x0, y0 = (BW - ww) * cx, (BH - wh) * cy
-            frame = im.transform((W, H), Image.AFFINE, (ww / W, 0, x0, 0, wh / H, y0), resample=Image.BILINEAR)
-            proc.stdin.write(frame.tobytes())
-        proc.stdin.close()
-        err = proc.stderr.read().decode(errors="replace")
-        if proc.wait() != 0:
-            raise RuntimeError(f"ffmpeg не смог закодировать клип {i}: {err[:400]}")
-    finally:
-        if proc.poll() is None:
-            proc.kill()
-    os.replace(tmp, out_path)
-    return out_path
+    still = out_path + ".still.png"
+    tmp = out_path + ".tmp.mp4"
+    motion = i % 6
+    with Image.open(img_path) as source:
+        image = _fit_16_9(source.convert("RGB"))
+        image.resize((W * 2, H * 2) if motion in (1, 3, 5) else (W, H),
+                     Image.Resampling.LANCZOS).save(still)
 
+    try:
+        if motion == 1:
+            zoom, x = f"1+0.12*on/{frames - 1}", "(iw-iw/zoom)/2"
+        elif motion == 3:
+            zoom, x = "1.10", f"(iw-iw/zoom)*(1-on/{frames - 1})"
+        elif motion == 5:
+            zoom, x = "1.10", f"(iw-iw/zoom)*on/{frames - 1}"
+        else:
+            zoom, x = None, None
+
+        if zoom:
+            vf = (f"zoompan=z='{zoom}':x='{x}':y='(ih-ih/zoom)/2':"
+                  f"d={frames}:s={W}x{H}:fps={FPS},format=yuv420p")
+            run_ffmpeg(["-i", still, "-vf", vf, "-frames:v", str(frames),
+                        "-an", *video_encoder_args(), tmp])
+        else:
+            run_ffmpeg(["-loop", "1", "-framerate", str(FPS), "-i", still,
+                        "-frames:v", str(frames), "-an", *video_encoder_args(), tmp])
+        os.replace(tmp, out_path)
+    finally:
+        if os.path.exists(still):
+            os.remove(still)
+        if os.path.exists(tmp):
+            os.remove(tmp)
+    return out_path
 
 def render_video_clip(src_mp4, duration, out_path):
     """Подогнать сгенерированный клип под длительность сцены: 1920x1080, 25 к/с, без звука.
@@ -2208,19 +2232,21 @@ def render_video_clip(src_mp4, duration, out_path):
     vf = (f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},setsar=1,fps={FPS},"
           f"tpad=stop_mode=clone:stop_duration={duration + 1:.3f}")
     run_ffmpeg(["-i", src_mp4, "-vf", vf, "-t", f"{duration:.3f}", "-an",
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", tmp])
+                *video_encoder_args(), tmp])
     os.replace(tmp, out_path)
     return out_path
 
 
-TRANSITIONS = ["fade", "slideleft", "circleopen", "wipeleft", "dissolve", "smoothleft", "fadeblack", "zoomin"]
+TRANSITIONS = ["zoomin", "slideleft", "slideright"]
 
 
 def assemble_video(scenes, img_dir, videos, audio_path, job_dir, out_mp4, progress, motion=False):
     clips_dir = os.path.join(job_dir, "clips" + ("_m" if motion else ""))
     os.makedirs(clips_dir, exist_ok=True)
     n = len(scenes)
-    workers = max(1, min(4, (os.cpu_count() or 2) // 2))
+    video_encoder_args()
+    progress("render", 0, n, "кодирование: NVIDIA" if _NVENC_AVAILABLE else "кодирование: процессор")
+    workers = max(1, min(2 if _NVENC_AVAILABLE else 4, (os.cpu_count() or 2) // 2))
     extra = TRANSITION if motion else 0.0  # в моушн-режиме клипы длиннее на время перехода
 
     grouped = motion and n > XFADE_GROUP
@@ -2290,7 +2316,7 @@ def concat_with_transitions(clips, scenes, audio_path, out_mp4, job_dir=None, pr
     """Склейка через xfade: каждый переход длится TRANSITION с, сцены остаются синхронными с озвучкой.
     Длинные ролики — группами по XFADE_GROUP: сначала промежуточные ролики без звука, потом переходы между ними."""
     durs = [s["duration"] for s in scenes]
-    enc = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p"]
+    enc = video_encoder_args()
     if len(clips) > XFADE_GROUP:
         gdir = os.path.join(job_dir or os.path.dirname(clips[0]), "groups")
         os.makedirs(gdir, exist_ok=True)

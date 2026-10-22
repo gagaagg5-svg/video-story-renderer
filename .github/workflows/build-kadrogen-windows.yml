@@ -32,6 +32,8 @@ jobs:
         run: python tests/test_manual_images.py
       - name: Download FFmpeg
         run: python packaging/download_ffmpeg.py
+      - name: Test zoom, slides, and encoder fallback
+        run: python tests/test_native_render.py
       - name: Build standalone application
         run: python -m PyInstaller --noconfirm --clean KadroGen.spec
       - name: Complete portable folder

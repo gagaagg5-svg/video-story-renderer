@@ -236,10 +236,11 @@ def make_video(audio, folder, motion=False, subtitles=False, progress_cb=None, t
         scenes.append({"index": i, "start": position, "duration": length})
         position += length
     timeline_manifest = os.path.join(work_dir, "manual_timing.json")
-    if pipeline.read_json(timeline_manifest) != durations:
+    render_state = {"durations": durations, "renderer": "native-nvenc-v1", "transitions": "zoom-slide-v1"}
+    if pipeline.read_json(timeline_manifest) != render_state:
         for name in ("clips", "clips_m", "groups"):
             shutil.rmtree(os.path.join(work_dir, name), ignore_errors=True)
-        pipeline.write_json(timeline_manifest, durations)
+        pipeline.write_json(timeline_manifest, render_state)
     detail = "по таймингу" if timing_file else f"примерно {duration / n:.1f} с на кадр"
     progress("scenes", n, n, f"{n} своих кадров · {detail}")
     image_dir = _import_images(paths, work_dir, progress)

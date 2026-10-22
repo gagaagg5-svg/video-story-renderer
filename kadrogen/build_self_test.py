@@ -35,7 +35,7 @@ def run(report_path):
                                creationflags=pipeline.NO_WINDOW, timeout=30)
                 timing = root / "timing.csv"
                 timing.write_text("filename,duration_seconds\n002.png,1\n001.png,2\n", encoding="utf-8")
-                output = manual_images.make_video(str(audio), str(images), timing_file=str(timing))
+                output = manual_images.make_video(str(audio), str(images), timing_file=str(timing), motion=True)
                 info = subprocess.run([pipeline.ffmpeg_bin("ffprobe"), "-v", "error", "-show_entries",
                                        "format=duration:stream=codec_type,width,height", "-of", "json", output],
                                       check=True, capture_output=True, text=True,
@@ -45,7 +45,7 @@ def run(report_path):
                 assert abs(duration - 3.0) < 0.2, data
                 assert any(s.get("width") == 1920 and s.get("height") == 1080 for s in data["streams"]), data
                 assert any(s.get("codec_type") == "audio" for s in data["streams"]), data
-                report.update(ok=True, duration_seconds=duration, checks=["bundled resources", "CSV ordering", "FFmpeg", "Full HD video with audio"])
+                report.update(ok=True, duration_seconds=duration, checks=["bundled resources", "CSV ordering", "FFmpeg native render", "xfade motion", "Full HD video with audio"])
             finally:
                 fastgen_api._DATA_DIR = old_data_dir
     except Exception:
