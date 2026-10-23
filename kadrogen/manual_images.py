@@ -260,7 +260,9 @@ def image_preview(folder, index):
 
 
 def apply_film_effect(video_path, strength, work_dir):
-    """Sparse animated dust/scratches plus subtle temporal grain."""
+    """Slow translucent film dust and fine fibres, without full-frame digital noise."""
+    import math
+
     if strength not in ("light", "retro"):
         raise ValueError("Неизвестный эффект плёнки.")
     dust_dir = os.path.join(work_dir, "film_dust")
@@ -268,27 +270,35 @@ def apply_film_effect(video_path, strength, work_dir):
     os.makedirs(dust_dir)
     output = video_path + ".film.tmp.mp4"
     try:
-        for frame in range(100):
+        # Stable particles drift slowly and fade through an eight-second seamless
+        # cycle. Regenerating random positions every frame caused harsh flicker.
+        rng = random.Random(42319)
+        width, height = 960, 540
+        cycle_frames = pipeline.FPS * 8
+        particles = []
+        for index in range(14 if strength == "light" else 26):
+            particles.append((rng.uniform(15, width - 15), rng.uniform(25, height - 25),
+                              rng.random(), rng.uniform(-9, 9), rng.uniform(12, 28),
+                              rng.randint(10, 24) if strength == "light" else rng.randint(16, 36),
+                              index % 6 == 0, rng.choice((35, 225, 240))))
+        for frame in range(cycle_frames):
             pipeline.check_cancel()
-            rng = random.Random(42319 + frame)
-            image = Image.new("RGBA", (480, 270))
+            image = Image.new("RGBA", (width, height))
             draw = ImageDraw.Draw(image)
-            for _ in range(9 if strength == "light" else 23):
-                x, y = rng.randrange(480), rng.randrange(270)
-                radius = rng.choice((1, 1, 2))
-                value = rng.choice((20, 235, 250))
-                draw.ellipse((x, y, x + radius, y + radius),
-                             fill=(value, value, value, rng.randrange(30, 95)))
-            if strength == "retro" and rng.random() < 0.24:
-                x = rng.randrange(20, 460)
-                y = rng.randrange(0, 180)
-                draw.line((x, y, x + rng.randrange(-3, 4), min(270, y + rng.randrange(35, 180))),
-                          fill=(230, 230, 220, rng.randrange(22, 58)), width=1)
+            for x0, y0, offset, dx, dy, opacity, fibre, value in particles:
+                phase = (frame / cycle_frames + offset) % 1.0
+                alpha = round(opacity * math.sin(math.pi * phase) ** 2)
+                x = x0 + dx * (phase - 0.5)
+                y = y0 + dy * (phase - 0.5)
+                color = (value, value, value, alpha)
+                if fibre:
+                    draw.line([(x, y), (x + 2, y + 3), (x + 1, y + 7),
+                               (x + 3, y + 10)], fill=color, width=1)
+                else:
+                    draw.ellipse((x, y, x + 1.5, y + 1.5), fill=color)
             image.save(os.path.join(dust_dir, f"dust_{frame:03d}.png"))
-        noise = 5 if strength == "light" else 9
-        filters = (f"[0:v]noise=alls={noise}:allf=t+u[base];"
-                   f"[1:v]format=rgba,scale={pipeline.W}:{pipeline.H}:flags=bilinear[dust];"
-                   "[base][dust]overlay=shortest=1:format=auto,format=yuv420p[v]")
+        filters = (f"[1:v]format=rgba,scale={pipeline.W}:{pipeline.H}:flags=bilinear[dust];"
+                   "[0:v][dust]overlay=shortest=1:format=auto,format=yuv420p[v]")
         pipeline.run_ffmpeg(["-i", video_path, "-stream_loop", "-1", "-framerate", str(pipeline.FPS),
                              "-i", os.path.join(dust_dir, "dust_%03d.png"),
                              "-filter_complex", filters, "-map", "[v]", "-map", "0:a:0",
