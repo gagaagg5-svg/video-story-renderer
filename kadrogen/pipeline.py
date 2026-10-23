@@ -2163,10 +2163,13 @@ def video_encoder_args(force=False):
         if _NVENC_AVAILABLE is None:
             _NVENC_ERROR = ""
             try:
+                # Probe at the export resolution: tiny frames can be rejected by
+                # NVENC even when the GPU supports normal 1080p encoding.
                 probe = subprocess.run(
                     [ffmpeg_bin(), "-hide_banner", "-loglevel", "error", "-f", "lavfi",
-                     "-i", "color=c=black:s=64x64:r=25:d=0.08", "-frames:v", "1",
-                     "-c:v", "h264_nvenc", "-preset", "p4", "-f", "null", os.devnull],
+                     "-i", f"color=c=black:s={W}x{H}:r={FPS}:d=0.12", "-frames:v", "3",
+                     "-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", "20",
+                     "-b:v", "0", "-pix_fmt", "yuv420p", "-f", "null", os.devnull],
                     stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                     creationflags=NO_WINDOW, timeout=15,
                 )
