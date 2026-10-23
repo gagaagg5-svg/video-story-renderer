@@ -6,3 +6,6 @@ yt-dlp==2026.8.19
 youtube-transcript-api==1.2.4
 pillow==12.3.0
 pyinstaller==6.22.2
+moderngl==5.12.0
+glcontext==3.0.0
+

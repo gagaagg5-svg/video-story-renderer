@@ -1087,8 +1087,21 @@ class Api:
 
     def check_video_encoder(self):
         pipeline.video_encoder_args(force=True)
-        return {"nvenc": bool(pipeline._NVENC_AVAILABLE),
-                "error": pipeline._NVENC_ERROR[:400] if not pipeline._NVENC_AVAILABLE else ""}
+        status = {"nvenc": bool(pipeline._NVENC_AVAILABLE),
+                  "error": pipeline._NVENC_ERROR[:400] if not pipeline._NVENC_AVAILABLE else ""}
+        try:
+            from gpu_render import Composer
+            composer = Composer(pipeline.W, pipeline.H, film="light")
+            try:
+                # Compile and execute both shaders, including readback.
+                texture = composer.video(0, bytes([96, 128, 160]) * pipeline.W * pipeline.H)
+                composer.draw(texture, texture, (0, 0, 1), (0, 0, 1), 0.5, 1, 0)
+                status["graphics"] = composer.renderer
+            finally:
+                composer.close()
+        except Exception as exc:
+            status["graphics_error"] = str(exc)[:300]
+        return status
 
     def manual_image_preview(self, folder, index):
         return manual_images.image_preview(folder, index)
@@ -1712,5 +1725,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 

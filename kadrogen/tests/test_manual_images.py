@@ -29,6 +29,7 @@ def main():
     fake.read_json = lambda path: json.loads(Path(path).read_text()) if Path(path).exists() else None
     fake.write_json = lambda path, data: Path(path).write_text(json.dumps(data))
     fake.cleanup_job = lambda job: None
+    fake.log = lambda message: None
     calls = []
 
     def assemble(scenes, image_dir, videos, audio_path, job_dir, output, progress, motion=False):
@@ -40,6 +41,12 @@ def main():
 
     fake.assemble_video = assemble
     sys.modules["pipeline"] = fake
+    # Test the manual UI/timing contract independently of the graphics driver.
+    gpu = ModuleType("gpu_render")
+    def render(scenes, image_dir, videos, audio, work_dir, output, progress, motion=False, film="none"):
+        assemble(scenes, image_dir, videos, audio, work_dir, output, progress, motion)
+    gpu.render = render
+    sys.modules["gpu_render"] = gpu
     module_path = Path(__file__).resolve().parents[1] / "manual_images.py"
     spec = importlib.util.spec_from_file_location("manual_images", module_path)
     manual = importlib.util.module_from_spec(spec)
@@ -131,10 +138,19 @@ def main():
     assert calls[-2] == ([3.0, 3.0, 3.0], [0.0, 3.0, 6.0])
     assert Path(quick).is_file()
     assert Path(manual.job_dir(str(audio)) + "_preview").is_dir()
+    # A missing graphics context must retain the existing FFmpeg path.
+    def unavailable(*args, **kwargs):
+        raise RuntimeError("No OpenGL driver")
+    gpu.render = unavailable
+    fallback = manual.make_video(str(audio), str(source), preview=True)
+    assert Path(fallback).read_bytes() == b"video"
+    metrics = json.loads((Path(manual.job_dir(str(audio)) + "_preview") / "render_metrics.json").read_text())
+    assert metrics["backend"] == "ffmpeg-fallback"
     print("Manual-image smoke test passed")
 
 
 if __name__ == "__main__":
     main()
+
 
 

@@ -12,6 +12,7 @@ import os
 import random
 import re
 import shutil
+import time
 from urllib.parse import unquote, urlparse
 import xml.etree.ElementTree as ET
 
@@ -427,7 +428,8 @@ def make_video(audio, folder, motion=False, subtitles=False, progress_cb=None, t
     render_state = {"durations": durations, "intro": intro_stamp, "intro_length": intro_length,
                     "preview": bool(preview), "focus": points,
                     "zoom_seconds": zoom_seconds, "motion": bool(motion),
-                    "renderer": "native-nvenc-v2", "transitions": "zoom-slide-v1"}
+                    "renderer": "opengl-single-pass-v1", "film_effect": film_effect,
+                    "transitions": "zoom-slide-v1"}
     if pipeline.read_json(timeline_manifest) != render_state:
         for name in ("clips", "clips_m", "groups"):
             shutil.rmtree(os.path.join(work_dir, name), ignore_errors=True)
@@ -441,6 +443,25 @@ def make_video(audio, folder, motion=False, subtitles=False, progress_cb=None, t
     os.makedirs(output_dir, exist_ok=True)
     base = os.path.basename(work_dir)
     result = os.path.join(output_dir, base + ".mp4")
+
+    def render_target(target):
+        try:
+            import gpu_render
+            gpu_render.render(scenes, image_dir, videos, audio, work_dir, target, progress,
+                              motion=motion, film=film_effect)
+            return
+        except Exception as exc:
+            pipeline.check_cancel()
+            pipeline.log(f"GPU-эффекты недоступны, резервный рендер: {exc}")
+            progress("render", 0, 0, "резервный рендер · GPU-эффекты недоступны: " + str(exc)[:160])
+        started = time.perf_counter()
+        pipeline.assemble_video(scenes, image_dir, videos, audio, work_dir, target, progress, motion=motion)
+        if film_effect != "none":
+            progress("render", 0, 0, "накладываю частицы старой плёнки · резервный рендер")
+            apply_film_effect(target, film_effect, work_dir)
+        pipeline.write_json(os.path.join(work_dir, "render_metrics.json"),
+                            {"backend": "ffmpeg-fallback", "elapsed_seconds": round(time.perf_counter() - started, 3)})
+
     if subtitles:
         cfg = pipeline.load_config()
         if cfg.get("fastgen_api_key"):
@@ -451,7 +472,7 @@ def make_video(audio, folder, motion=False, subtitles=False, progress_cb=None, t
             raise ValueError("Для субтитров нужен ключ fast-gen или OpenAI для распознавания речи.")
         transcript = pipeline.transcribe(engine, client, audio, work_dir, progress, duration)
         raw = os.path.join(work_dir, "nosubs.mp4")
-        pipeline.assemble_video(scenes, image_dir, videos, audio, work_dir, raw, progress, motion=motion)
+        render_target(raw)
         pipeline.check_cancel()
         progress("subtitles", 0, 1, "накладываю субтитры")
         sub_dir = os.path.join(output_dir, "subtitles")
@@ -462,12 +483,10 @@ def make_video(audio, folder, motion=False, subtitles=False, progress_cb=None, t
         os.replace(result + ".tmp.mp4", result)
         progress("subtitles", 1, 1, "субтитры готовы")
     else:
-        pipeline.assemble_video(scenes, image_dir, videos, audio, work_dir, result, progress, motion=motion)
-    if film_effect != "none":
-        progress("render", 0, 0, "накладываю частицы старой плёнки")
-        apply_film_effect(result, film_effect, work_dir)
+        render_target(result)
     pipeline.cleanup_job(work_dir)
     progress("done", 1, 1, f"готово: {result}")
     return result
+
 
 

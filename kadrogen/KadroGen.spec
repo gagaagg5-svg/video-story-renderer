@@ -4,6 +4,11 @@ from PyInstaller.utils.hooks import collect_all
 datas = [('ui.html', '.'), ('fonts', 'fonts'), ('music', 'music'), ('docs/instruction.html', 'docs')]
 binaries = []
 hiddenimports = ['clr_loader', 'pythonnet']
+for package in ('moderngl', 'glcontext'):
+    gl_datas, gl_binaries, gl_imports = collect_all(package)
+    datas += gl_datas
+    binaries += gl_binaries
+    hiddenimports += gl_imports
 tmp_ret = collect_all('webview')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('clr_loader')
@@ -61,3 +66,4 @@ coll = COLLECT(
     upx_exclude=[],
     name='KadroGen',
 )
+

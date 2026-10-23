@@ -12,6 +12,24 @@ permissions:
   contents: read
 
 jobs:
+  gpu-composition-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install software OpenGL test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg libegl1 libgl1-mesa-dri
+          python -m pip install pillow==12.3.0 moderngl==5.12.0 glcontext==3.0.0
+      - name: Verify shaders, timing, intro, film, and cancellation
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+          LP_NUM_THREADS: '4'
+        run: python kadrogen/tests/test_gpu_render.py --require-gl
   build:
     runs-on: windows-2022
     timeout-minutes: 35
@@ -34,6 +52,8 @@ jobs:
         run: python packaging/download_ffmpeg.py
       - name: Test zoom, slides, and encoder fallback
         run: python tests/test_native_render.py
+      - name: Test GPU composition if a graphics driver is available
+        run: python tests/test_gpu_render.py
       - name: Build standalone application
         run: python -m PyInstaller --noconfirm --clean KadroGen.spec
       - name: Complete portable folder
@@ -64,3 +84,4 @@ jobs:
           path: kadrogen/KadroGen-Windows-Images-Timing.zip
           retention-days: 14
           if-no-files-found: error
+
