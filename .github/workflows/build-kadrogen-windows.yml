@@ -21,9 +21,12 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install software OpenGL test dependencies
+        timeout-minutes: 3
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg libegl1 libgl1-mesa-dri
+          if ! command -v ffmpeg >/dev/null || ! python -c "import ctypes; ctypes.CDLL('libEGL.so.1')"; then
+            sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 update
+            sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 install -y ffmpeg libegl1 libgl1-mesa-dri
+          fi
           python -m pip install pillow==12.3.0 moderngl==5.12.0 glcontext==3.0.0
       - name: Verify shaders, timing, intro, film, and cancellation
         env:
