@@ -260,12 +260,15 @@ def image_preview(folder, index):
             "src": "data:image/jpeg;base64," + base64.b64encode(data.getvalue()).decode("ascii")}
 
 
-def apply_film_effect(video_path, strength, work_dir):
+def apply_film_effect(video_path, strength, work_dir, film_intensity=50):
     """Slow translucent film dust and fine fibres, without full-frame digital noise."""
     import math
 
     if strength not in ("light", "retro"):
         raise ValueError("Неизвестный эффект плёнки.")
+    gain = max(0.0, min(100.0, float(film_intensity))) / 50.0
+    if gain == 0:
+        return
     dust_dir = os.path.join(work_dir, "film_dust")
     shutil.rmtree(dust_dir, ignore_errors=True)
     os.makedirs(dust_dir)
@@ -277,26 +280,27 @@ def apply_film_effect(video_path, strength, work_dir):
         width, height = 960, 540
         cycle_frames = pipeline.FPS * 8
         particles = []
-        for index in range(14 if strength == "light" else 26):
+        for index in range(48 if strength == "light" else 76):
             particles.append((rng.uniform(15, width - 15), rng.uniform(25, height - 25),
                               rng.random(), rng.uniform(-9, 9), rng.uniform(12, 28),
-                              rng.randint(10, 24) if strength == "light" else rng.randint(16, 36),
-                              index % 6 == 0, rng.choice((35, 225, 240))))
+                              rng.randint(60, 95) if strength == "light" else rng.randint(85, 125),
+                              index % 6 == 0, rng.choice((15, 235, 250)),
+                              rng.uniform(2.5, 4.5), rng.uniform(12, 26)))
         for frame in range(cycle_frames):
             pipeline.check_cancel()
             image = Image.new("RGBA", (width, height))
             draw = ImageDraw.Draw(image)
-            for x0, y0, offset, dx, dy, opacity, fibre, value in particles:
+            for x0, y0, offset, dx, dy, opacity, fibre, value, size, length in particles:
                 phase = (frame / cycle_frames + offset) % 1.0
-                alpha = round(opacity * math.sin(math.pi * phase) ** 2)
+                alpha = round(min(255, opacity * gain) * math.sin(math.pi * phase) ** 2)
                 x = x0 + dx * (phase - 0.5)
                 y = y0 + dy * (phase - 0.5)
                 color = (value, value, value, alpha)
                 if fibre:
-                    draw.line([(x, y), (x + 2, y + 3), (x + 1, y + 7),
-                               (x + 3, y + 10)], fill=color, width=1)
+                    draw.line([(x, y), (x + 2, y + length * .3), (x + 1, y + length * .7),
+                               (x + 3, y + length)], fill=color, width=1)
                 else:
-                    draw.ellipse((x, y, x + 1.5, y + 1.5), fill=color)
+                    draw.ellipse((x, y, x + size, y + size), fill=color)
             image.save(os.path.join(dust_dir, f"dust_{frame:03d}.png"))
         filters = (f"[1:v]format=rgba,scale={pipeline.W}:{pipeline.H}:flags=bilinear[dust];"
                    "[0:v][dust]overlay=shortest=1:format=auto,format=yuv420p[v]")
@@ -375,7 +379,7 @@ def _import_images(paths, work_dir, progress, offset=0):
 
 def make_video(audio, folder, motion=False, subtitles=False, progress_cb=None, timing_file=None,
                intro_video=None, focus_points=None, zoom_seconds=18, film_effect="none",
-               preview=False):
+               preview=False, film_intensity=50):
     if not os.path.isfile(audio):
         raise ValueError("Файл озвучки не найден. Выберите MP3 заново.")
     paths = list_images(folder)
@@ -400,6 +404,12 @@ def make_video(audio, folder, motion=False, subtitles=False, progress_cb=None, t
         raise ValueError("Время приближения: от 6 до 40 секунд.")
     if film_effect not in ("none", "light", "retro"):
         raise ValueError("Неизвестный эффект плёнки.")
+    try:
+        film_intensity = float(film_intensity)
+    except (ValueError, TypeError):
+        raise ValueError("Заметность плёнки: число от 0 до 100%.") from None
+    if not math.isfinite(film_intensity) or not 0 <= film_intensity <= 100:
+        raise ValueError("Заметность плёнки: от 0 до 100%.")
     n = len(paths)
     scenes, position = [], 0.0
     videos = {}
@@ -429,6 +439,7 @@ def make_video(audio, folder, motion=False, subtitles=False, progress_cb=None, t
                     "preview": bool(preview), "focus": points,
                     "zoom_seconds": zoom_seconds, "motion": bool(motion),
                     "renderer": "opengl-single-pass-v1", "film_effect": film_effect,
+                    "film_intensity": film_intensity,
                     "transitions": "zoom-slide-v1"}
     if pipeline.read_json(timeline_manifest) != render_state:
         for name in ("clips", "clips_m", "groups"):
@@ -448,7 +459,7 @@ def make_video(audio, folder, motion=False, subtitles=False, progress_cb=None, t
         try:
             import gpu_render
             gpu_render.render(scenes, image_dir, videos, audio, work_dir, target, progress,
-                              motion=motion, film=film_effect)
+                              motion=motion, film=film_effect, film_intensity=film_intensity)
             return
         except Exception as exc:
             pipeline.check_cancel()
@@ -458,7 +469,7 @@ def make_video(audio, folder, motion=False, subtitles=False, progress_cb=None, t
         pipeline.assemble_video(scenes, image_dir, videos, audio, work_dir, target, progress, motion=motion)
         if film_effect != "none":
             progress("render", 0, 0, "накладываю частицы старой плёнки · резервный рендер")
-            apply_film_effect(target, film_effect, work_dir)
+            apply_film_effect(target, film_effect, work_dir, film_intensity=film_intensity)
         pipeline.write_json(os.path.join(work_dir, "render_metrics.json"),
                             {"backend": "ffmpeg-fallback", "elapsed_seconds": round(time.perf_counter() - started, 3)})
 

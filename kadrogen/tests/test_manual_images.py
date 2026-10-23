@@ -43,7 +43,9 @@ def main():
     sys.modules["pipeline"] = fake
     # Test the manual UI/timing contract independently of the graphics driver.
     gpu = ModuleType("gpu_render")
-    def render(scenes, image_dir, videos, audio, work_dir, output, progress, motion=False, film="none"):
+    film_options = []
+    def render(scenes, image_dir, videos, audio, work_dir, output, progress, motion=False, film="none", film_intensity=50):
+        film_options.append((film, film_intensity))
         assemble(scenes, image_dir, videos, audio, work_dir, output, progress, motion)
     gpu.render = render
     sys.modules["gpu_render"] = gpu
@@ -138,6 +140,14 @@ def main():
     assert calls[-2] == ([3.0, 3.0, 3.0], [0.0, 3.0, 6.0])
     assert Path(quick).is_file()
     assert Path(manual.job_dir(str(audio)) + "_preview").is_dir()
+    manual.make_video(str(audio), str(source), preview=True, film_effect="light", film_intensity=75)
+    assert film_options[-1] == ("light", 75)
+    for bad in (-1, 101, float("nan"), None):
+        try:
+            manual.make_video(str(audio), str(source), preview=True, film_intensity=bad)
+            raise AssertionError("Invalid film intensity accepted")
+        except ValueError:
+            pass
     # A missing graphics context must retain the existing FFmpeg path.
     def unavailable(*args, **kwargs):
         raise RuntimeError("No OpenGL driver")

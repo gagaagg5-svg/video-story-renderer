@@ -113,7 +113,7 @@ def crop_for(scene, frame, total_frames, fps):
 
 
 class Composer:
-    def __init__(self, width, height, film="none", allow_software=False):
+    def __init__(self, width, height, film="none", allow_software=False, film_intensity=50):
         import moderngl
         self.gl = moderngl
         kwargs = {"backend": "egl"} if sys.platform.startswith("linux") else {}
@@ -132,7 +132,8 @@ class Composer:
             self.program["next_image"] = 1
             self.textures = {}
             self.particles = []
-            if film != "none":
+            self.film_gain = max(0.0, min(100.0, float(film_intensity))) / 50.0
+            if film != "none" and self.film_gain > 0:
                 self._init_dust(film)
             self.pixels = bytearray(width * height * 3)
         except BaseException:
@@ -141,11 +142,12 @@ class Composer:
 
     def _init_dust(self, film):
         rng = random.Random(42319)
-        for i in range(14 if film == "light" else 26):
+        for i in range(48 if film == "light" else 76):
             self.particles.append((rng.uniform(15, 945), rng.uniform(25, 515), rng.random(),
                                    rng.uniform(-9, 9), rng.uniform(12, 28),
-                                   rng.randint(10, 24) if film == "light" else rng.randint(16, 36),
-                                   int(i % 6 == 0), rng.choice((35, 225, 240))))
+                                   rng.randint(60, 95) if film == "light" else rng.randint(85, 125),
+                                   int(i % 6 == 0), rng.choice((15, 235, 250)),
+                                   rng.uniform(5, 9), rng.uniform(12, 26)))
         atlas = Image.new("RGBA", (64, 32))
         draw = ImageDraw.Draw(atlas)
         draw.ellipse((8, 8, 24, 24), fill=(255, 255, 255, 255))
@@ -196,12 +198,12 @@ class Composer:
         self.vao.render(vertices=3)
         if self.particles:
             data = []
-            for x0, y0, offset, dx, dy, opacity, fibre, value in self.particles:
+            for x0, y0, offset, dx, dy, opacity, fibre, value, size, length in self.particles:
                 phase = (seconds / 8.0 + offset) % 1.0
-                alpha = opacity / 255.0 * math.sin(math.pi * phase) ** 2
+                alpha = min(1.0, opacity / 255.0 * self.film_gain) * math.sin(math.pi * phase) ** 2
                 data.extend(((x0 + dx * (phase - 0.5)) / 960,
                              (y0 + dy * (phase - 0.5)) / 540,
-                             (6 if fibre else 4) / 960, (10 if fibre else 4) / 540,
+                             (10 if fibre else size) / 960, (length if fibre else size) / 540,
                              alpha, value / 255.0, float(fibre)))
             self.dust_buffer.write(struct.pack(f"{len(data)}f", *data))
             self.atlas.use(2)
@@ -225,13 +227,13 @@ def _stop(process):
 
 
 def render(scenes, img_dir, videos, audio, work_dir, output, progress,
-           motion=False, film="none", allow_software=False):
+           motion=False, film="none", allow_software=False, film_intensity=50):
     """Returns render metrics. Raises on failure so the caller can use FFmpeg fallback."""
     started = time.perf_counter()
     width, height, fps = pipeline.W, pipeline.H, pipeline.FPS
     boundaries, overlaps = frame_plan(scenes, fps, motion)
     total = boundaries[-1]
-    composer = Composer(width, height, film, allow_software=allow_software)
+    composer = Composer(width, height, film, allow_software=allow_software, film_intensity=film_intensity)
     encoder = decoder = None
     stopped = threading.Event()
     tmp = output + ".gpu.tmp.mp4"
@@ -242,7 +244,8 @@ def render(scenes, img_dir, videos, audio, work_dir, output, progress,
     try:
         enc = pipeline.video_encoder_args()
         encoder_name = enc[enc.index("-c:v") + 1]
-        progress("render", 0, total, f"эффекты: {composer.renderer} · кодирование: {encoder_name} · один проход")
+        film_label = f" · плёнка: {film}, {film_intensity:g}%" if film != "none" else ""
+        progress("render", 0, total, f"эффекты: {composer.renderer} · кодирование: {encoder_name} · один проход{film_label}")
         args = [pipeline.ffmpeg_bin(), "-y", "-hide_banner", "-loglevel", "error",
                 "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{width}x{height}",
                 "-r", str(fps), "-i", "pipe:0", "-i", audio,
@@ -322,6 +325,7 @@ def render(scenes, img_dir, videos, audio, work_dir, output, progress,
         pipeline.check_cancel()
         os.replace(tmp, output)
         metrics = {"backend": "opengl-single-pass", "graphics": composer.renderer,
+                   "film_effect": film, "film_intensity": film_intensity,
                    "encoder": encoder_name, "frames": total, "video_seconds": total / fps,
                    "elapsed_seconds": round(time.perf_counter() - started, 3)}
         pipeline.write_json(os.path.join(work_dir, "render_metrics.json"), metrics)

@@ -12,7 +12,7 @@ import tempfile
 import threading
 from types import ModuleType
 
-from PIL import Image, ImageDraw, ImageOps
+from PIL import Image, ImageDraw, ImageOps, ImageChops
 
 ROOT = Path(__file__).resolve().parents[1]
 FFMPEG = str(ROOT / "ffmpeg" / "ffmpeg.exe") if (ROOT / "ffmpeg" / "ffmpeg.exe").exists() else "ffmpeg"
@@ -90,7 +90,8 @@ def run():
         first = bytes(film.draw(texture, texture, (0, 0, 1), (0, 0, 1), 0, 0, 0))
         later = bytes(film.draw(texture, texture, (0, 0, 1), (0, 0, 1), 0, 0, 8))
         assert first == later
-        plain = picture.resize((320, 180)).tobytes()
+        film.film_gain = 0
+        plain = bytes(film.draw(texture, texture, (0, 0, 1), (0, 0, 1), 0, 0, 0))
         assert first != plain
         film.close()
         audio, intro = root / "voice.wav", root / "intro.mp4"
@@ -137,6 +138,25 @@ def run():
             fake.CANCEL.clear()
         assert protected.read_bytes() == b"previous completed export"
         assert not Path(str(protected) + ".gpu.tmp.mp4").exists()
+        # Regression: tiny low-alpha dots used to vanish after H.264 compression.
+        # Test the actual encoded Full HD output, not just a non-empty GL buffer.
+        fake.W, fake.H = 1920, 1080
+        Image.new("RGB", (640, 360), (110, 100, 90)).save(images / "0000.png")
+        still_scene = [{"index": 0, "duration": .8, "zoom": False}]
+        samples = []
+        for intensity in (0, 50, 100):
+            export = root / f"visibility_{intensity}.mp4"
+            gpu.render(still_scene, str(images), {}, str(audio), tmp, str(export), lambda *args: None,
+                       film="light", film_intensity=intensity, allow_software=True)
+            frame = ff(["-i", export, "-ss", "0.4", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"])
+            samples.append(Image.frombytes("RGB", (1920, 1080), frame))
+        def visible_pixels(image):
+            hist = ImageChops.difference(samples[0], image).convert("L").histogram()
+            return sum(hist[12:])
+        mild, strong = visible_pixels(samples[1]), visible_pixels(samples[2])
+        assert 300 < mild < 20000, (mild, strong)  # visible, still sparse; no full-frame noise
+        assert strong > mild, (mild, strong)
+        print(json.dumps({"film_visible_pixels_50": mild, "film_visible_pixels_100": strong}))
         print(json.dumps({"ok": True, "graphics": renderer, "metrics": metrics}))
 
 

@@ -690,7 +690,7 @@ def run_job(audio, provider, mode, style, use_refs, subtitles=False, motion=Fals
 
 def run_manual_job(audio, folder, motion, subtitles, timing_file=None,
                    intro_video=None, focus_points=None, zoom_seconds=18, film_effect="none",
-                   preview=False):
+                   preview=False, film_intensity=50):
     keep_awake(True)
     try:
         with LOCK:
@@ -699,7 +699,8 @@ def run_manual_job(audio, folder, motion, subtitles, timing_file=None,
         result = manual_images.make_video(audio, folder, motion=motion, subtitles=subtitles,
                                           progress_cb=progress_cb, timing_file=timing_file,
                                           intro_video=intro_video, focus_points=focus_points,
-                                          zoom_seconds=zoom_seconds, film_effect=film_effect, preview=preview)
+                                          zoom_seconds=zoom_seconds, film_effect=film_effect, preview=preview,
+                                          film_intensity=film_intensity)
         with LOCK:
             STATE["result"] = result
     except pipeline.Cancelled:
@@ -1235,6 +1236,7 @@ class Api:
             focus_points = opts.get("focus_points") or {}
             zoom_seconds = opts.get("zoom_seconds", 18)
             film_effect = opts.get("film_effect") or "none"
+            film_intensity = opts.get("film_intensity", 50)
             preview = bool(opts.get("preview"))
             if not os.path.isfile(audio):
                 return {"ok": False, "error": "Выберите файл озвучки MP3."}
@@ -1247,6 +1249,9 @@ class Api:
                     raise ValueError("Время приближения: от 6 до 40 секунд.")
                 if film_effect not in ("none", "light", "retro"):
                     raise ValueError("Неизвестный эффект плёнки.")
+                film_intensity = float(film_intensity)
+                if not 0 <= film_intensity <= 100:
+                    raise ValueError("Заметность плёнки: от 0 до 100%.")
                 if not isinstance(focus_points, dict):
                     raise ValueError("Некорректные точки фокуса.")
             except (ValueError, OSError, RuntimeError) as exc:
@@ -1262,7 +1267,7 @@ class Api:
             thread = threading.Thread(target=run_manual_job,
                                       args=(audio, folder, bool(opts.get("motion")), bool(opts.get("subtitles")),
                                             timing_file, intro_video, focus_points, zoom_seconds, film_effect,
-                                            preview), daemon=True)
+                                            preview, film_intensity), daemon=True)
             thread.start()
             return {"ok": True}
         audio = (opts.get("audio") or "").strip().strip('"')
