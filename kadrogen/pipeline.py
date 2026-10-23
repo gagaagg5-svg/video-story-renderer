@@ -2150,14 +2150,18 @@ def _fit_16_9(im):
 
 
 _NVENC_AVAILABLE = None
+_NVENC_ERROR = ""
 _NVENC_LOCK = threading.Lock()
 
 
-def video_encoder_args():
+def video_encoder_args(force=False):
     """Probe the actual FFmpeg + driver once; fall back to CPU if NVENC cannot encode."""
-    global _NVENC_AVAILABLE
+    global _NVENC_AVAILABLE, _NVENC_ERROR
     with _NVENC_LOCK:
+        if force:
+            _NVENC_AVAILABLE = None
         if _NVENC_AVAILABLE is None:
+            _NVENC_ERROR = ""
             try:
                 probe = subprocess.run(
                     [ffmpeg_bin(), "-hide_banner", "-loglevel", "error", "-f", "lavfi",
@@ -2167,9 +2171,16 @@ def video_encoder_args():
                     creationflags=NO_WINDOW, timeout=15,
                 )
                 _NVENC_AVAILABLE = probe.returncode == 0
-            except (OSError, subprocess.TimeoutExpired):
+                if not _NVENC_AVAILABLE:
+                    lines = probe.stderr.decode(errors="replace").strip().splitlines()
+                    useful = ("driver", "device", "cuda", "nvenc", "encoder", "load", "supported")
+                    _NVENC_ERROR = next((line.strip() for line in lines if any(x in line.lower() for x in useful)),
+                                        lines[-1].strip() if lines else f"ffmpeg завершился с кодом {probe.returncode}")
+            except (OSError, subprocess.TimeoutExpired) as exc:
                 _NVENC_AVAILABLE = False
-            log("Кодирование: NVIDIA NVENC" if _NVENC_AVAILABLE else "Кодирование: процессор (libx264)")
+                _NVENC_ERROR = str(exc)
+            log("Кодирование: NVIDIA NVENC" if _NVENC_AVAILABLE else
+                f"Кодирование: процессор (libx264). NVENC недоступен: {_NVENC_ERROR}")
     if _NVENC_AVAILABLE:
         return ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", "20",
                 "-b:v", "0", "-pix_fmt", "yuv420p"]
@@ -2259,7 +2270,8 @@ def assemble_video(scenes, img_dir, videos, audio_path, job_dir, out_mp4, progre
     os.makedirs(clips_dir, exist_ok=True)
     n = len(scenes)
     video_encoder_args()
-    progress("render", 0, n, "кодирование: NVIDIA" if _NVENC_AVAILABLE else "кодирование: процессор")
+    progress("render", 0, n, "кодирование: NVIDIA" if _NVENC_AVAILABLE else
+             "кодирование: процессор · NVENC: " + _NVENC_ERROR[:140])
     workers = max(1, min(2 if _NVENC_AVAILABLE else 4, (os.cpu_count() or 2) // 2))
     extra = TRANSITION if motion else 0.0  # в моушн-режиме клипы длиннее на время перехода
 
@@ -2947,4 +2959,5 @@ if __name__ == "__main__":
     make_video(sys.argv[1], provider=arg("--provider"), mode=arg("--mode", "images"), style_key=arg("--style"),
                use_refs="--refs" in sys.argv, subtitles="--subs" in sys.argv, motion="--motion" in sys.argv,
                fastgen_quality=arg("--quality"))
+
 

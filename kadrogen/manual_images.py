@@ -363,18 +363,23 @@ def _import_images(paths, work_dir, progress, offset=0):
 
 
 def make_video(audio, folder, motion=False, subtitles=False, progress_cb=None, timing_file=None,
-               intro_video=None, focus_points=None, zoom_seconds=18, film_effect="none"):
+               intro_video=None, focus_points=None, zoom_seconds=18, film_effect="none",
+               preview=False):
     if not os.path.isfile(audio):
         raise ValueError("Файл озвучки не найден. Выберите MP3 заново.")
     paths = list_images(folder)
     progress = pipeline.Progress(progress_cb)
     pipeline.CANCEL.clear()
-    work_dir = job_dir(audio)
+    work_dir = job_dir(audio) + ("_preview" if preview else "")
     os.makedirs(work_dir, exist_ok=True)
     duration = pipeline.audio_duration(audio)
     if duration <= 0:
         raise ValueError("Не удалось определить длину озвучки.")
     paths, durations, intro_length = resolve_full_timing(paths, timing_file, duration, intro_video)
+    if preview:
+        intro_length = min(3.0, intro_length)
+        durations = [min(3.0, value) for value in durations]
+        subtitles = False  # Full-length speech recognition is inappropriate for a short visual test.
     focus_points = focus_points or {}
     try:
         zoom_seconds = float(zoom_seconds)
@@ -409,14 +414,17 @@ def make_video(audio, folder, motion=False, subtitles=False, progress_cb=None, t
     timeline_manifest = os.path.join(work_dir, "manual_timing.json")
     intro_stamp = ({"path": os.path.abspath(intro_video), "size": os.stat(intro_video).st_size,
                     "mtime_ns": os.stat(intro_video).st_mtime_ns} if intro_video else None)
-    render_state = {"durations": durations, "intro": intro_stamp, "intro_length": intro_length, "focus": points,
+    render_state = {"durations": durations, "intro": intro_stamp, "intro_length": intro_length,
+                    "preview": bool(preview), "focus": points,
                     "zoom_seconds": zoom_seconds, "motion": bool(motion),
                     "renderer": "native-nvenc-v2", "transitions": "zoom-slide-v1"}
     if pipeline.read_json(timeline_manifest) != render_state:
         for name in ("clips", "clips_m", "groups"):
             shutil.rmtree(os.path.join(work_dir, name), ignore_errors=True)
         pipeline.write_json(timeline_manifest, render_state)
-    detail = "по таймингу от 00:00" if timing_file else f"примерно {(duration - intro_length) / n:.1f} с на кадр"
+    detail = (f"проба: до 3 с на кадр, всего {intro_length + sum(durations):.0f} с" if preview else
+              "по таймингу от 00:00" if timing_file else
+              f"примерно {(duration - intro_length) / n:.1f} с на кадр")
     progress("scenes", n, n, f"{n} своих кадров · {detail}")
     image_dir = _import_images(paths, work_dir, progress, offset=offset)
     output_dir = os.path.join(pipeline.data_dir(), "output")
@@ -451,4 +459,5 @@ def make_video(audio, folder, motion=False, subtitles=False, progress_cb=None, t
     pipeline.cleanup_job(work_dir)
     progress("done", 1, 1, f"готово: {result}")
     return result
+
 

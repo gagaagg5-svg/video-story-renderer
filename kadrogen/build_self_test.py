@@ -51,11 +51,23 @@ def run(report_path):
                 assert abs(duration - 3.0) < 0.2, data
                 assert any(s.get("width") == 1920 and s.get("height") == 1080 for s in data["streams"]), data
                 assert any(s.get("codec_type") == "audio" for s in data["streams"]), data
-                report.update(ok=True, duration_seconds=duration, checks=["bundled resources", "full 00:00 CSV timeline", "opening video", "per-image zoom focus", "xfade motion", "film particles", "Full HD video with audio"])
+                long_audio = root / "long_voice.wav"
+                subprocess.run([pipeline.ffmpeg_bin(), "-y", "-v", "error", "-f", "lavfi", "-i",
+                                "sine=frequency=440:duration=15", str(long_audio)], check=True,
+                               creationflags=pipeline.NO_WINDOW, timeout=30)
+                preview = manual_images.make_video(str(long_audio), str(images), motion=True,
+                                                   intro_video=str(intro), preview=True)
+                preview_len = pipeline.audio_duration(preview)
+                assert preview.endswith("_preview.mp4") and abs(preview_len - 7.0) < 0.2, preview_len
+                report.update(ok=True, duration_seconds=duration, preview_seconds=preview_len,
+                              checks=["bundled resources", "full 00:00 CSV timeline", "opening video",
+                                      "per-image zoom focus", "xfade motion", "film particles",
+                                      "short preview of all images", "Full HD video with audio"])
             finally:
                 fastgen_api._DATA_DIR = old_data_dir
     except Exception:
         report["error"] = traceback.format_exc()
     Path(report_path).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return 0 if report["ok"] else 1
+
 

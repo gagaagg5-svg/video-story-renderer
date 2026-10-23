@@ -123,9 +123,18 @@ def main():
         raise AssertionError("Timeline gap was accepted")
     except ValueError as exc:
         assert "разрыв" in str(exc)
+    # A long narration with only a few images must have a genuinely short
+    # preview that still visits every image, without touching the full job.
+    fake.audio_duration = lambda path: 3000.0
+    quick = manual.make_video(str(audio), str(source), motion=True, preview=True)
+    assert quick.endswith("_preview.mp4")
+    assert calls[-2] == ([3.0, 3.0, 3.0], [0.0, 3.0, 6.0])
+    assert Path(quick).is_file()
+    assert Path(manual.job_dir(str(audio)) + "_preview").is_dir()
     print("Manual-image smoke test passed")
 
 
 if __name__ == "__main__":
     main()
+
 

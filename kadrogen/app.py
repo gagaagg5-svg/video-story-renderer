@@ -174,11 +174,17 @@ def estimate_plan(opts):
         try:
             images = manual_images.list_images(opts.get("manual_folder") or "")
             duration = pipeline.audio_duration(opts.get("audio") or "")
+            images, durations, opening = manual_images.resolve_full_timing(
+                images, opts.get("timing_file") or None, duration,
+                opts.get("intro_video") or None)
         except (ValueError, OSError, RuntimeError):
             return {"ok": False}
-        return {"ok": True, "duration": int(round(duration)), "scenes": len(images),
+        preview = bool(opts.get("preview"))
+        shown_duration = sum(min(3.0, d) for d in durations) + min(3.0, opening) if preview else duration
+        return {"ok": True, "manual": True, "preview": preview,
+                "duration": int(round(shown_duration)), "scenes": len(images),
                 "words": 0, "quality": "speed", "fastgen": False, "credits": 0,
-                "minutes": max(1, round(1 + duration / 60)), "alt_minutes": 0,
+                "minutes": None, "alt_minutes": 0,
                 "wait_hours": 0, "video_off": False}
     providers = pipeline.normalize_providers(opts.get("providers"))
     mode = opts.get("mode", "images")
@@ -683,16 +689,17 @@ def run_job(audio, provider, mode, style, use_refs, subtitles=False, motion=Fals
 
 
 def run_manual_job(audio, folder, motion, subtitles, timing_file=None,
-                   intro_video=None, focus_points=None, zoom_seconds=18, film_effect="none"):
+                   intro_video=None, focus_points=None, zoom_seconds=18, film_effect="none",
+                   preview=False):
     keep_awake(True)
     try:
         with LOCK:
-            STATE["job_dir"] = manual_images.job_dir(audio)
+            STATE["job_dir"] = manual_images.job_dir(audio) + ("_preview" if preview else "")
             STATE["scenes"] = len(manual_images.list_images(folder))
         result = manual_images.make_video(audio, folder, motion=motion, subtitles=subtitles,
                                           progress_cb=progress_cb, timing_file=timing_file,
                                           intro_video=intro_video, focus_points=focus_points,
-                                          zoom_seconds=zoom_seconds, film_effect=film_effect)
+                                          zoom_seconds=zoom_seconds, film_effect=film_effect, preview=preview)
         with LOCK:
             STATE["result"] = result
     except pipeline.Cancelled:
@@ -1078,6 +1085,11 @@ class Api:
                                         file_types=("Видео (*.mp4;*.mov;*.mkv;*.webm)", "Все файлы (*.*)"))
         return (res[0] if isinstance(res, (list, tuple)) else str(res)) if res else ""
 
+    def check_video_encoder(self):
+        pipeline.video_encoder_args(force=True)
+        return {"nvenc": bool(pipeline._NVENC_AVAILABLE),
+                "error": pipeline._NVENC_ERROR[:400] if not pipeline._NVENC_AVAILABLE else ""}
+
     def manual_image_preview(self, folder, index):
         return manual_images.image_preview(folder, index)
 
@@ -1210,6 +1222,7 @@ class Api:
             focus_points = opts.get("focus_points") or {}
             zoom_seconds = opts.get("zoom_seconds", 18)
             film_effect = opts.get("film_effect") or "none"
+            preview = bool(opts.get("preview"))
             if not os.path.isfile(audio):
                 return {"ok": False, "error": "Выберите файл озвучки MP3."}
             try:
@@ -1225,7 +1238,7 @@ class Api:
                     raise ValueError("Некорректные точки фокуса.")
             except (ValueError, OSError, RuntimeError) as exc:
                 return {"ok": False, "error": str(exc)}
-            if opts.get("subtitles") and not (load_cfg().get("fastgen_api_key") or load_cfg().get("openai_api_key")):
+            if opts.get("subtitles") and not preview and not (load_cfg().get("fastgen_api_key") or load_cfg().get("openai_api_key")):
                 return {"ok": False, "error": "Для субтитров добавьте ключ OpenAI или fast-gen либо выключите субтитры."}
             with LOCK:
                 if STATE["running"] or STATE["preparing"]:
@@ -1235,7 +1248,8 @@ class Api:
                               "error": None, "cancelled": False, "started_at": time.time()})
             thread = threading.Thread(target=run_manual_job,
                                       args=(audio, folder, bool(opts.get("motion")), bool(opts.get("subtitles")),
-                                            timing_file, intro_video, focus_points, zoom_seconds, film_effect), daemon=True)
+                                            timing_file, intro_video, focus_points, zoom_seconds, film_effect,
+                                            preview), daemon=True)
             thread.start()
             return {"ok": True}
         audio = (opts.get("audio") or "").strip().strip('"')
@@ -1698,4 +1712,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
