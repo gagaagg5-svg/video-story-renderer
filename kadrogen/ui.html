@@ -466,6 +466,20 @@
   <div class="screen" id="screen4">
     <div class="topbar"><div class="logo"><span class="k">Kadro</span><span class="d">.</span><span class="thin">Gen</span></div><div class="stepname"><span data-i18n="step"></span> <b>04</b> · <span data-i18n="s4"></span></div></div>
     <div class="alist" id="dropzone"></div>
+    <div class="alist" style="margin-top:20px;padding:20px">
+      <h3 data-i18n="render_music_title"></h3>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin:12px 0">
+        <button onclick="pickRenderMusic()" data-i18n="render_music_add"></button>
+        <button class="ghost" onclick="renderMusicTracks=[]; renderMusicList()" data-i18n="render_music_clear"></button>
+      </div>
+      <div id="render_music_list" style="display:grid;gap:8px"></div>
+      <div style="display:flex;gap:15px;align-items:center;margin-top:14px">
+        <label for="render_music_volume" data-i18n="render_music_volume"></label>
+        <input id="render_music_volume" type="range" min="0" max="100" step="1" value="15" oninput="renderMusicVolume=+this.value; document.getElementById('render_music_value').textContent=this.value+'%'">
+        <span id="render_music_value">15%</span>
+      </div>
+      <div class="note" style="margin-top:10px;white-space:normal" data-i18n="render_music_hint"></div>
+    </div>
     <datalist id="voice_list"></datalist>
     <datalist id="lang_list"><option value="русском"><option value="польском"><option value="английском"><option value="украинском"><option value="немецком"><option value="испанском"><option value="французском"><option value="португальском"><option value="итальянском"><option value="турецком"></datalist>
     <div class="status err" id="s_prep" style="text-align:center"></div>
@@ -574,6 +588,25 @@ const I18N = {
 };
 Object.assign(I18N.ru, {copy_speed_label:'Скорость второй версии',copy_speed_button:'Создать ускоренную копию',copy_speed_open:'Открыть вторую версию',copy_speed_hint:'Ускоряет изображение и озвучку, сохраняя высоту голоса. Основной ролик остаётся отдельным файлом.',copy_speed_busy:'Создаю вторую версию: '});
 Object.assign(I18N.en, {copy_speed_label:'Second version speed',copy_speed_button:'Create faster copy',copy_speed_open:'Open second version',copy_speed_hint:'Speeds up video and audio while preserving voice pitch. Keeps the original file.',copy_speed_busy:'Creating second version: '});
+Object.assign(I18N.ru, {render_music_title:'Музыка в видео',render_music_add:'Добавить треки',render_music_clear:'Убрать музыку',render_music_volume:'Громкость музыки',render_music_hint:'Треки играют по порядку: 1 → 2 → 3 → 4 → снова 1, до конца ролика. Стрелками можно менять порядок. 0% — без музыки. Начните с 10–20%: озвучка остаётся на своей громкости.'});
+Object.assign(I18N.en, {render_music_title:'Music in the video',render_music_add:'Add tracks',render_music_clear:'Remove music',render_music_volume:'Music volume',render_music_hint:'Tracks play in order and repeat until the video ends. Use arrows to reorder. 0% turns music off. Start at 10–20%; narration keeps its own volume.'});
+I18N.ru.stages.music = 'Музыка'; I18N.en.stages.music = 'Music';
+let renderMusicTracks = [], renderMusicVolume = 15;
+async function pickRenderMusic() {
+  const added = await pywebview.api.pick_music_tracks();
+  if (renderMusicTracks.length + added.length > 50) { toast(L === 'ru' ? 'Не более 50 треков' : 'Up to 50 tracks'); return; }
+  renderMusicTracks.push(...added); renderMusicList();
+}
+function moveRenderMusic(i, direction) {
+  const j = i + direction;
+  if (j < 0 || j >= renderMusicTracks.length) return;
+  [renderMusicTracks[i],renderMusicTracks[j]] = [renderMusicTracks[j],renderMusicTracks[i]];
+  renderMusicList();
+}
+function removeRenderMusic(i) { renderMusicTracks.splice(i,1); renderMusicList(); }
+function renderMusicList() {
+  $('render_music_list').innerHTML = renderMusicTracks.map((path,i) => `<div style="display:flex;gap:8px;align-items:center"><span style="flex:1;overflow-wrap:anywhere">${i+1}. ${esc(path.split(/[\\/]/).pop())}</span><button class="ghost" onclick="moveRenderMusic(${i},-1)"${i===0?' disabled':''} aria-label="Move up">↑</button><button class="ghost" onclick="moveRenderMusic(${i},1)"${i===renderMusicTracks.length-1?' disabled':''} aria-label="Move down">↓</button><button class="ghost" onclick="removeRenderMusic(${i})" aria-label="Remove">×</button></div>`).join('');
+}
 let L = 'ru';
 const t = k => I18N[L][k];
 const TTS_PH = {voicegen:'VoiceGen key (Telegram bot)', voicer:'Voicer token', lumean:'Lumean key'};
@@ -590,8 +623,8 @@ Object.assign(MANUAL_LABELS.ru, {overlay:'Свой видеофутаж',overlay
 Object.assign(MANUAL_LABELS.en, {overlay:'Custom video overlay',overlayPick:'Choose overlay',overlayNone:'No video overlay',overlayOpacity:'Overlay visibility',overlaySpeed:'Overlay speed',overlayHint:'Black-background video: dust, scratches or particles. Loops across the whole video, including the intro. Overlay audio is muted. 0.5× is half speed.'});
 const mt = k => MANUAL_LABELS[L][k];
 const manualMode = () => provs().includes('manual');
-const ORDER = {start:0, rewrite:0, tts:0, transcribe:1, scenes:1, style:2, prompts:2, refs:3, images:4, videos:5, render:6, subtitles:7, done:8};
-const STAGE_KEYS = ['rewrite','tts','transcribe','prompts','refs','images','videos','render','subtitles','done'];
+const ORDER = {music:7, start:0, rewrite:0, tts:0, transcribe:1, scenes:1, style:2, prompts:2, refs:3, images:4, videos:5, render:6, subtitles:7, done:8};
+const STAGE_KEYS = ['rewrite','tts','transcribe','prompts','refs','images','videos','render','subtitles','music','done'];
 const RW_LINKS = {fastgen:'https://fast-gen.ai/', openai:'https://platform.openai.com/api-keys', anthropic:'https://console.anthropic.com/settings/keys', gemini:'https://aistudio.google.com/apikey'};
 const RW_PH = {fastgen:'ключ fast-gen (тот же, что для картинок)', openai:'sk-...', anthropic:'sk-ant-...', gemini:'AIza...', openrouter:'sk-or-...'};
 const QA_ENGINES = [['gemini','Gemini'],['anthropic','Claude'],['openai','OpenAI'],['openrouter','OpenRouter']];
@@ -772,6 +805,7 @@ function renderReview(script) {
       `<div><span>${mt('zoomSpeed')}</span><span>${zoomSeconds} с</span></div>` +
       `<div><span>${mt('film')}</span><span>${esc(mt(filmEffect === 'retro' ? 'filmRetro' : filmEffect === 'light' ? 'filmLight' : 'filmNone'))}${filmEffect !== 'none' ? ' · ' + filmIntensity + '%' : ''}</span></div>` +
       `<div><span>${mt('overlay')}</span><span>${overlayPath ? esc(overlayPath) + ' · ' + overlayOpacity + '% · ' + overlaySpeed + '×' : mt('overlayNone')}</span></div>` +
+      `<div><span>${t('render_music_title')}</span><span>${renderMusicTracks.length} · ${renderMusicVolume}%</span></div>` +
       `<div><span>${mt('preview')}</span><span>${manualPreview ? mt('previewOn') : mt('previewOff')}</span></div>` +
       `<div><span>${t('o_motion')}</span><span>${$('use_motion').checked ? t('rv_yes') : t('rv_no')}</span></div>` +
       `<div><span>${t('o_subs')}</span><span>${$('use_subs').checked ? t('rv_yes') : t('rv_no')}</span></div>`;
@@ -934,11 +968,11 @@ function fmt(s) { const m = Math.floor(s / 60), ss = s % 60; return (m ? m + ' '
 function plural(n, f) { const m = n % 10, h = n % 100; return n + ' ' + (h >= 11 && h <= 14 ? f[2] : m === 1 ? f[0] : m >= 2 && m <= 4 ? f[1] : f[2]); }
 function buildStages(m) {
   if (manualMode()) {
-    $('stages').innerHTML = ['scenes','images','render', ...($('use_subs').checked ? ['subtitles'] : []),'done']
+    $('stages').innerHTML = ['scenes','images','render', ...($('use_subs').checked ? ['subtitles'] : []), ...(renderMusicTracks.length && renderMusicVolume > 0 ? ['music'] : []),'done']
       .map(k => `<li id="sg_${k}">${t('stages')[k]}</li>`).join('');
     return;
   }
-  $('stages').innerHTML = STAGE_KEYS.filter(k => !(k === 'videos' && m === 'images' && !vf()) && !(k === 'refs' && fgq() !== 'quality') && !(k === 'subtitles' && !$('use_subs').checked) && !(k === 'tts' && source !== 'script' && !rwOn()) && k !== 'rewrite').map(k => `<li id="sg_${k}">${t('stages')[k]}</li>`).join('');
+  $('stages').innerHTML = STAGE_KEYS.filter(k => !(k === 'music' && (!renderMusicTracks.length || renderMusicVolume === 0)) && !(k === 'videos' && m === 'images' && !vf()) && !(k === 'refs' && fgq() !== 'quality') && !(k === 'subtitles' && !$('use_subs').checked) && !(k === 'tts' && source !== 'script' && !rwOn()) && k !== 'rewrite').map(k => `<li id="sg_${k}">${t('stages')[k]}</li>`).join('');
 }
 // ===== «Перерисовать» кадр: во время создания — до сборки, после — удаляется и дорисуется при повторном запуске =====
 function markRedo(i) { const d = $('fr' + i); if (!d) return; known.delete(i * 2); known.delete(i * 2 + 1); if (d.querySelector('img')) d.innerHTML = '<span class="ph"></span>'; d.classList.remove('active'); d.classList.add('pending', 'redo'); }
@@ -1321,7 +1355,7 @@ async function loadVoices() {
   renderVoiceList(r.voices.map(v => ({id: v.id, name: `${v.name}${v.lang ? ' · ' + v.lang : ''}${v.gender ? ' · ' + v.gender : ''}`})));
   if (st) { st.textContent = r.voices.length ? t('voices_n').replace('{n}', r.voices.length) : t('voices_none'); st.className = 'status st ok'; }
 }
-function opts() { syncAll(); return {audio: audioPath, manual_folder: manualFolder, timing_file: timingPath, intro_video: introVideo, focus_points: focusPoints, zoom_seconds: zoomSeconds, film_effect: filmEffect, film_intensity: filmIntensity, overlay: overlayPath ? {path: overlayPath, opacity: overlayOpacity / 100, speed: overlaySpeed} : null, preview: manualPreview, source, script: F.script, tts, voice: F.voice, providers: provs(), mode: mode(), use_refs: fgq() === 'quality', subtitles: $('use_subs').checked, motion: $('use_motion').checked, hd: $('use_hd').checked, qa: $('use_qa').checked, speed: $('use_speed').checked, video_first: vf(), style: styleKey, custom_style: customStyle(),
+function opts() { syncAll(); return {render_music: {tracks: renderMusicTracks.slice(), volume: renderMusicVolume}, audio: audioPath, manual_folder: manualFolder, timing_file: timingPath, intro_video: introVideo, focus_points: focusPoints, zoom_seconds: zoomSeconds, film_effect: filmEffect, film_intensity: filmIntensity, overlay: overlayPath ? {path: overlayPath, opacity: overlayOpacity / 100, speed: overlaySpeed} : null, preview: manualPreview, source, script: F.script, tts, voice: F.voice, providers: provs(), mode: mode(), use_refs: fgq() === 'quality', subtitles: $('use_subs').checked, motion: $('use_motion').checked, hd: $('use_hd').checked, qa: $('use_qa').checked, speed: $('use_speed').checked, video_first: vf(), style: styleKey, custom_style: customStyle(),
   rewrite: {on: rwOn(), source: rwSrc, url: F.rwUrl, text: F.rwText, engine: rwEngine, words: F.rwWords, language: F.rwLang}}; }
 
 // ===== фоновая музыка: плейлист из папки music, ползунок 0..100 (середина — тихо, низ — выключено),
@@ -1349,6 +1383,7 @@ window.addEventListener('pywebviewready', () => loadConfig(false));
 </script>
 </body>
 </html>
+
 
 
 

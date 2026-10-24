@@ -55,7 +55,7 @@ HTML_PATH = os.path.join(RES_DIR, "ui.html")
 STAGE_NAMES = {
     "start": "Подготовка", "transcribe": "Распознавание речи", "scenes": "Разбиение на сцены",
     "style": "Стиль ролика", "prompts": "Описания сцен", "refs": "Референсы героев", "images": "Картинки",
-    "videos": "Оживление картинок", "render": "Сборка видео", "subtitles": "Субтитры", "prepare": "Расчёт", "done": "Готово",
+    "videos": "Оживление картинок", "render": "Сборка видео", "music": "Музыка", "subtitles": "Субтитры", "prepare": "Расчёт", "done": "Готово",
     "rewrite": "Рерайт сценария", "tts": "Озвучка",
     "tts": "Озвучка",
 }
@@ -123,7 +123,7 @@ def run_queue(common):
             audio = item.get("audio") if item.get("source") == "mp3" else None
             # стиль у задания свой, если включён «Разный стиль» и выбран; иначе общий
             run_job(audio, common["provider"], common["mode"], style_key(item.get("style"), common["style"]), common["use_refs"], common["subtitles"], common["motion"],
-                    script, rw, common["tts"], (item.get("voice") or "").strip(), common["video_first"], common["hd"])
+                    script, rw, common["tts"], (item.get("voice") or "").strip(), common["video_first"], common["hd"], common.get("render_music"))
             with LOCK:
                 if STATE.get("cancelled"):
                     item["status"] = "stopped"
@@ -660,7 +660,7 @@ def keep_awake(on):
         pass
 
 
-def run_job(audio, provider, mode, style, use_refs, subtitles=False, motion=False, script=None, rewrite=None, tts=None, voice=None, video_first=0, hd=False):
+def run_job(audio, provider, mode, style, use_refs, subtitles=False, motion=False, script=None, rewrite=None, tts=None, voice=None, video_first=0, hd=False, render_music=None):
     keep_awake(True)
     try:
         apply_engine(provider)
@@ -670,6 +670,10 @@ def run_job(audio, provider, mode, style, use_refs, subtitles=False, motion=Fals
         out = pipeline.make_video(audio, progress_cb=progress_cb, provider=provider, mode=mode, style_key=style,
                                   use_refs=use_refs, subtitles=subtitles, motion=motion, script_text=script, rewrite=rewrite,
                                   tts_service=tts, tts_voice=voice, video_first=video_first, hd=hd)
+        if render_music:
+            import music_mix
+            music_mix.apply(out, render_music, progress_cb)
+            progress_cb("done", 1, 1, f"готово: {out}")
         with LOCK:
             STATE["result"] = out
     except pipeline.Cancelled:
@@ -692,7 +696,7 @@ def run_job(audio, provider, mode, style, use_refs, subtitles=False, motion=Fals
 
 def run_manual_job(audio, folder, motion, subtitles, timing_file=None,
                    intro_video=None, focus_points=None, zoom_seconds=18, film_effect="none",
-                   preview=False, film_intensity=50, overlay=None):
+                   preview=False, film_intensity=50, overlay=None, render_music=None):
     keep_awake(True)
     try:
         with LOCK:
@@ -703,6 +707,10 @@ def run_manual_job(audio, folder, motion, subtitles, timing_file=None,
                                           intro_video=intro_video, focus_points=focus_points,
                                           zoom_seconds=zoom_seconds, film_effect=film_effect, preview=preview,
                                           film_intensity=film_intensity, overlay=overlay)
+        if render_music:
+            import music_mix
+            music_mix.apply(result, render_music, progress_cb)
+            progress_cb("done", 1, 1, f"готово: {result}")
         with LOCK:
             STATE["result"] = result
     except pipeline.Cancelled:
@@ -1088,6 +1096,11 @@ class Api:
                                         file_types=("Видео (*.mp4;*.mov;*.mkv;*.webm)", "Все файлы (*.*)"))
         return (res[0] if isinstance(res, (list, tuple)) else str(res)) if res else ""
 
+    def pick_music_tracks(self):
+        res = WINDOW.create_file_dialog(webview.OPEN_DIALOG, allow_multiple=True,
+                                        file_types=("Музыка (*.mp3;*.wav;*.m4a;*.aac;*.flac;*.ogg;*.wma;*.aif;*.aiff)", "Все файлы (*.*)"))
+        return list(res) if isinstance(res, (list, tuple)) else ([str(res)] if res else [])
+
     def pick_overlay_video(self):
         res = WINDOW.create_file_dialog(webview.OPEN_DIALOG, allow_multiple=False,
                                         file_types=("Футаж на чёрном фоне (*.mp4;*.mov;*.mkv;*.webm)", "Все файлы (*.*)"))
@@ -1235,6 +1248,11 @@ class Api:
         return {"ok": True}
 
     def start(self, opts):
+        import music_mix
+        try:
+            render_music = music_mix.validate(opts.get("render_music"))
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
         if "manual" in (opts.get("providers") or []):
             audio = (opts.get("audio") or "").strip().strip('"')
             folder = opts.get("manual_folder") or ""
@@ -1275,7 +1293,7 @@ class Api:
             thread = threading.Thread(target=run_manual_job,
                                       args=(audio, folder, bool(opts.get("motion")), bool(opts.get("subtitles")),
                                             timing_file, intro_video, focus_points, zoom_seconds, film_effect,
-                                            preview, film_intensity, overlay), daemon=True)
+                                            preview, film_intensity, overlay, render_music), daemon=True)
             thread.start()
             return {"ok": True}
         audio = (opts.get("audio") or "").strip().strip('"')
@@ -1311,7 +1329,7 @@ class Api:
             rec.insert(0, {"id": voice, "service": tts})
             cfg["tts_recent"] = rec[:12]
         save_cfg(cfg)
-        threading.Thread(target=run_job, args=(audio, provider, mode, style, use_refs, subtitles, motion, script, rw, tts, voice, video_first, hd), daemon=True).start()
+        threading.Thread(target=run_job, args=(audio, provider, mode, style, use_refs, subtitles, motion, script, rw, tts, voice, video_first, hd, render_music), daemon=True).start()
         return {"ok": True}
 
     # ---------- очередь заданий ----------
@@ -1391,6 +1409,11 @@ class Api:
     def queue_start(self, opts):
         """Общие настройки — как у обычного запуска; текст/файл и голос у каждого задания свои."""
         global QUEUE_STOP
+        import music_mix
+        try:
+            render_music = music_mix.validate(opts.get("render_music"))
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
         provider = pipeline.normalize_providers(opts.get("providers"))
         err = self._validate_common(provider)
         if err:
@@ -1416,7 +1439,7 @@ class Api:
             QUEUE_STOP = False
         common = {"provider": provider, "mode": opts.get("mode", "images"), "style": style, "use_refs": cfg.get("quality") == "quality",
                   "subtitles": bool(opts.get("subtitles")), "motion": bool(opts.get("motion")), "hd": bool(opts.get("hd")),
-                  "video_first": _vf(opts.get("video_first")), "tts": tts}
+                  "video_first": _vf(opts.get("video_first")), "tts": tts, "render_music": render_music}
         cfg.update({"image_providers": provider, "mode": common["mode"], "style": style, "custom_style": custom_style, "use_refs": common["use_refs"], "subtitles": common["subtitles"],
                     "motion": common["motion"], "hd_images": common["hd"], "qa_images": bool(opts.get("qa", cfg.get("qa_images", False))),
                     "speed_copies": bool(opts.get("speed", cfg.get("speed_copies", False))),
@@ -1797,6 +1820,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
