@@ -87,5 +87,29 @@ with tempfile.TemporaryDirectory() as scratch:
     film_data = json.loads(film_probe)
     assert abs(float(film_data["format"]["duration"]) - duration) < 0.15
     assert any(stream["codec_type"] == "audio" for stream in film_data["streams"])
+    overlay_node = next(node for node in manual_tree.body if isinstance(node, ast.FunctionDef)
+                        and node.name == "apply_video_overlay")
+    exec(compile(ast.Module(body=[overlay_node], type_ignores=[]), "manual_images.py", "exec"), mn)
+    fx = Path(scratch) / "overlay.mp4"
+    run_ffmpeg(["-f", "lavfi", "-i", "color=c=white:s=640x360:r=25:d=0.4",
+                "-vf", "drawbox=x=0:y=0:w=320:h=360:color=black:t=fill", "-c:v", "libx264", str(fx)])
+    plain = Path(scratch) / "plain.mp4"
+    run_ffmpeg(["-f", "lavfi", "-i", "color=c=0x285078:s=640x360:r=25:d=1.2",
+                "-i", str(audio), "-t", "1.2", "-c:v", "libx264", "-c:a", "aac", str(plain)])
+    before = subprocess.check_output([ffmpeg, "-v", "error", "-i", str(plain), "-frames:v", "1",
+                                      "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"])
+    mn["apply_video_overlay"](str(plain), {"path": str(fx), "opacity": .5, "speed": .5})
+    after = subprocess.check_output([ffmpeg, "-v", "error", "-i", str(plain), "-ss", "0.92", "-frames:v", "1",
+                                     "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"])
+    before = Image.frombytes("RGB", (640,360), before)
+    after = Image.frombytes("RGB", (640,360), after)
+    assert all(abs(a-b) < 9 for a,b in zip(before.getpixel((80,100)), after.getpixel((80,100))))
+    assert after.getpixel((500,100))[0] > before.getpixel((500,100))[0] + 80
+    overlay_probe = json.loads(subprocess.check_output(
+        [ffmpeg.replace("ffmpeg.exe", "ffprobe.exe") if ffmpeg.endswith("ffmpeg.exe") else "ffprobe",
+         "-v", "error", "-show_entries", "format=duration:stream=codec_type", "-of", "json", str(plain)]))
+    assert abs(float(overlay_probe["format"]["duration"]) - 1.2) < .15
+    assert any(stream["codec_type"] == "audio" for stream in overlay_probe["streams"])
     print("Native render and requested transitions passed")
+
 

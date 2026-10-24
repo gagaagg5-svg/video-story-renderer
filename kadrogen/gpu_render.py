@@ -82,6 +82,16 @@ void main() {
     color = vec4(vec3(appearance.y), texture(atlas, uv).a * appearance.x);
 }
 """
+OVERLAY_FRAGMENT = """
+#version 330
+uniform sampler2D footage;
+uniform float opacity;
+in vec2 uv;
+out vec4 color;
+void main() {
+    color = vec4(texture(footage, uv).rgb * opacity, 1.0);
+}
+"""
 
 
 def frame_plan(scenes, fps, motion):
@@ -132,6 +142,7 @@ class Composer:
             self.program["next_image"] = 1
             self.textures = {}
             self.particles = []
+            self.overlay_texture = None
             self.film_gain = max(0.0, min(100.0, float(film_intensity))) / 50.0
             if film != "none" and self.film_gain > 0:
                 self._init_dust(film)
@@ -188,7 +199,8 @@ class Composer:
             if key not in keys:
                 self.textures.pop(key).release()
 
-    def draw(self, current, following, crop_a, crop_b, progress, transition, seconds):
+    def draw(self, current, following, crop_a, crop_b, progress, transition, seconds,
+             overlay_pixels=None, overlay_opacity=0.3):
         current.use(0)
         following.use(1)
         self.program["crop_a"] = crop_a
@@ -196,6 +208,20 @@ class Composer:
         self.program["progress"] = progress
         self.program["transition"] = transition
         self.vao.render(vertices=3)
+        if overlay_pixels is not None and overlay_opacity > 0:
+            if self.overlay_texture is None:
+                self.overlay_texture = self.ctx.texture((self.width, self.height), 3)
+                self.overlay_program = self.ctx.program(vertex_shader=VERTEX, fragment_shader=OVERLAY_FRAGMENT)
+                self.overlay_program["footage"] = 3
+                self.overlay_vao = self.ctx.vertex_array(self.overlay_program, [])
+            self.overlay_texture.write(overlay_pixels, alignment=1)
+            self.overlay_texture.use(3)
+            self.overlay_program["opacity"] = overlay_opacity
+            self.ctx.enable(self.gl.BLEND)
+            # Screen: source + destination * (1 - source). Black is neutral.
+            self.ctx.blend_func = self.gl.ONE, self.gl.ONE_MINUS_SRC_COLOR
+            self.overlay_vao.render(vertices=3)
+            self.ctx.disable(self.gl.BLEND)
         if self.particles:
             data = []
             for x0, y0, offset, dx, dy, opacity, fibre, value, size, length in self.particles:
@@ -227,19 +253,20 @@ def _stop(process):
 
 
 def render(scenes, img_dir, videos, audio, work_dir, output, progress,
-           motion=False, film="none", allow_software=False, film_intensity=50):
+           motion=False, film="none", allow_software=False, film_intensity=50, overlay=None):
     """Returns render metrics. Raises on failure so the caller can use FFmpeg fallback."""
     started = time.perf_counter()
     width, height, fps = pipeline.W, pipeline.H, pipeline.FPS
     boundaries, overlaps = frame_plan(scenes, fps, motion)
     total = boundaries[-1]
     composer = Composer(width, height, film, allow_software=allow_software, film_intensity=film_intensity)
-    encoder = decoder = None
+    encoder = decoder = overlay_decoder = None
     stopped = threading.Event()
     tmp = output + ".gpu.tmp.mp4"
     # Stderr must never fill a pipe while we write raw frames to stdin.
     encoder_log = tempfile.TemporaryFile()
     decoder_log = tempfile.TemporaryFile()
+    overlay_log = tempfile.TemporaryFile()
     watcher = None
     try:
         enc = pipeline.video_encoder_args()
@@ -256,6 +283,14 @@ def render(scenes, img_dir, videos, audio, work_dir, output, progress,
                 "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", tmp]
         encoder = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
                                    stderr=encoder_log, creationflags=pipeline.NO_WINDOW)
+        if overlay and overlay["opacity"] > 0:
+            vf = (f"setpts=(PTS-STARTPTS)/{overlay['speed']:.8f},"
+                  f"scale={width}:{height},setsar=1,fps={fps}")
+            overlay_decoder = subprocess.Popen(
+                [pipeline.ffmpeg_bin(), "-v", "error", "-stream_loop", "-1", "-i", overlay["path"],
+                 "-vf", vf, "-frames:v", str(total), "-an", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"],
+                stdout=subprocess.PIPE, stderr=overlay_log, creationflags=pipeline.NO_WINDOW)
+            progress("render", 0, total, f"футаж: {os.path.basename(overlay['path'])} · {overlay['opacity']:.0%} · {overlay['speed']:g}× · один проход")
         if videos:
             if set(videos) != {scenes[0]["index"]}:
                 raise ValueError("GPU-путь поддерживает видео только в начале.")
@@ -269,7 +304,7 @@ def render(scenes, img_dir, videos, audio, work_dir, output, progress,
         def cancel_pipes():
             while not stopped.wait(0.1):
                 if pipeline.CANCEL.is_set():
-                    for process in (encoder, decoder):
+                    for process in (encoder, decoder, overlay_decoder):
                         try:
                             _stop(process)
                         except OSError:
@@ -304,8 +339,14 @@ def render(scenes, img_dir, videos, audio, work_dir, output, progress,
                                    boundaries[i + 2] - boundaries[i + 1] + outgoing, fps)
                           if outgoing else (0.0, 0.0, 1.0))
                 frame = boundaries[i] + local
+                overlay_pixels = None
+                if overlay_decoder:
+                    overlay_pixels = overlay_decoder.stdout.read(width * height * 3)
+                    if len(overlay_pixels) != width * height * 3:
+                        raise RuntimeError("Не удалось прочитать футаж. Проверьте видеофайл эффекта.")
                 pixels = composer.draw(texture, next_texture or texture, crop_a, crop_b,
-                                       fraction, i % 5, frame / fps)
+                                       fraction, i % 5, frame / fps, overlay_pixels,
+                                       overlay["opacity"] if overlay else 0)
                 encoder.stdin.write(pixels)
                 now = time.perf_counter()
                 if now - reported >= 1.0:
@@ -320,12 +361,17 @@ def render(scenes, img_dir, videos, audio, work_dir, output, progress,
                 if decoder.wait(timeout=30) != 0:
                     raise RuntimeError("Ошибка чтения вступительного видео.")
         encoder.stdin.close()
+        if overlay_decoder:
+            overlay_decoder.stdout.close()
+            if overlay_decoder.wait(timeout=30) != 0:
+                raise RuntimeError("Ошибка чтения футажа.")
         if encoder.wait(timeout=120) != 0:
             raise RuntimeError("Ошибка кодирования GPU-рендера.")
         pipeline.check_cancel()
         os.replace(tmp, output)
         metrics = {"backend": "opengl-single-pass", "graphics": composer.renderer,
                    "film_effect": film, "film_intensity": film_intensity,
+                   "overlay": overlay,
                    "encoder": encoder_name, "frames": total, "video_seconds": total / fps,
                    "elapsed_seconds": round(time.perf_counter() - started, 3)}
         pipeline.write_json(os.path.join(work_dir, "render_metrics.json"), metrics)
@@ -335,11 +381,12 @@ def render(scenes, img_dir, videos, audio, work_dir, output, progress,
         pipeline.check_cancel()
         encoder_log.seek(0)
         decoder_log.seek(0)
-        details = (encoder_log.read() + decoder_log.read()).decode(errors="replace")[-1200:]
+        overlay_log.seek(0)
+        details = (encoder_log.read() + decoder_log.read() + overlay_log.read()).decode(errors="replace")[-1200:]
         raise RuntimeError(f"{exc} {details}".strip()) from exc
     finally:
         stopped.set()
-        for process in (encoder, decoder):
+        for process in (encoder, decoder, overlay_decoder):
             _stop(process)
             if process:
                 for stream in (process.stdin, process.stdout):
@@ -352,6 +399,7 @@ def render(scenes, img_dir, videos, audio, work_dir, output, progress,
             watcher.join(timeout=2)
         encoder_log.close()
         decoder_log.close()
+        overlay_log.close()
         composer.close()
         if os.path.exists(tmp):
             os.remove(tmp)

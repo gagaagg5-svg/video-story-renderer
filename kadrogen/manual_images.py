@@ -317,6 +317,50 @@ def apply_film_effect(video_path, strength, work_dir, film_intensity=50):
             os.remove(output)
 
 
+def validate_overlay(options):
+    if not options:
+        return None
+    if not isinstance(options, dict):
+        raise ValueError("Некорректные настройки футажа.")
+    path = options.get("path")
+    if not isinstance(path, str) or not os.path.isfile(path) or os.path.splitext(path)[1].lower() not in VIDEO_EXTENSIONS:
+        raise ValueError("Для футажа выберите существующий MP4, MOV, MKV или WEBM.")
+    try:
+        opacity, speed = float(options.get("opacity", .3)), float(options.get("speed", .5))
+    except (TypeError, ValueError):
+        raise ValueError("Прозрачность и скорость футажа должны быть числами.") from None
+    if not math.isfinite(opacity) or not 0 <= opacity <= 1:
+        raise ValueError("Заметность футажа: от 0 до 100%.")
+    if not math.isfinite(speed) or not .25 <= speed <= 2:
+        raise ValueError("Скорость футажа: от 0,25× до 2×.")
+    try:
+        intro_duration(path)  # Checks that a readable video track actually exists.
+    except ValueError as exc:
+        raise ValueError("Не удалось прочитать видеофайл футажа.") from exc
+    return {"path": os.path.abspath(path), "opacity": opacity, "speed": speed}
+
+
+def apply_video_overlay(video_path, overlay):
+    """Fallback for systems without OpenGL. Screen blend keeps black neutral."""
+    if not overlay or overlay["opacity"] == 0:
+        return
+    output = video_path + ".overlay.tmp.mp4"
+    filters = (f"[1:v]setpts=(PTS-STARTPTS)/{overlay['speed']:.8f},"
+               f"scale={pipeline.W}:{pipeline.H},setsar=1,fps={pipeline.FPS},format=gbrp[fx];"
+               "[0:v]setpts=PTS-STARTPTS,format=gbrp[base];"
+               f"[base][fx]blend=all_mode=screen:all_opacity={overlay['opacity']:.8f}:shortest=1,"
+               "format=yuv420p[v]")
+    try:
+        pipeline.run_ffmpeg(["-i", video_path, "-stream_loop", "-1", "-i", overlay["path"],
+                             "-filter_complex", filters, "-map", "[v]", "-map", "0:a:0",
+                             *pipeline.video_encoder_args(), "-c:a", "copy", "-movflags", "+faststart", output])
+        pipeline.check_cancel()
+        os.replace(output, video_path)
+    finally:
+        if os.path.exists(output):
+            os.remove(output)
+
+
 def _natural_key(path):
     return [int(part) if part.isdigit() else part.casefold()
             for part in re.split(r"(\d+)", os.path.basename(path))]
@@ -379,10 +423,11 @@ def _import_images(paths, work_dir, progress, offset=0):
 
 def make_video(audio, folder, motion=False, subtitles=False, progress_cb=None, timing_file=None,
                intro_video=None, focus_points=None, zoom_seconds=18, film_effect="none",
-               preview=False, film_intensity=50):
+               preview=False, film_intensity=50, overlay=None):
     if not os.path.isfile(audio):
         raise ValueError("Файл озвучки не найден. Выберите MP3 заново.")
     paths = list_images(folder)
+    overlay = validate_overlay(overlay)
     progress = pipeline.Progress(progress_cb)
     pipeline.CANCEL.clear()
     work_dir = job_dir(audio) + ("_preview" if preview else "")
@@ -435,11 +480,14 @@ def make_video(audio, folder, motion=False, subtitles=False, progress_cb=None, t
     timeline_manifest = os.path.join(work_dir, "manual_timing.json")
     intro_stamp = ({"path": os.path.abspath(intro_video), "size": os.stat(intro_video).st_size,
                     "mtime_ns": os.stat(intro_video).st_mtime_ns} if intro_video else None)
+    overlay_stamp = ({**overlay, "size": os.stat(overlay["path"]).st_size,
+                      "mtime_ns": os.stat(overlay["path"]).st_mtime_ns} if overlay else None)
     render_state = {"durations": durations, "intro": intro_stamp, "intro_length": intro_length,
                     "preview": bool(preview), "focus": points,
                     "zoom_seconds": zoom_seconds, "motion": bool(motion),
                     "renderer": "opengl-single-pass-v1", "film_effect": film_effect,
                     "film_intensity": film_intensity,
+                    "overlay": overlay_stamp,
                     "transitions": "zoom-slide-v1"}
     if pipeline.read_json(timeline_manifest) != render_state:
         for name in ("clips", "clips_m", "groups"):
@@ -459,7 +507,7 @@ def make_video(audio, folder, motion=False, subtitles=False, progress_cb=None, t
         try:
             import gpu_render
             gpu_render.render(scenes, image_dir, videos, audio, work_dir, target, progress,
-                              motion=motion, film=film_effect, film_intensity=film_intensity)
+                              motion=motion, film=film_effect, film_intensity=film_intensity, overlay=overlay)
             return
         except Exception as exc:
             pipeline.check_cancel()
@@ -467,6 +515,9 @@ def make_video(audio, folder, motion=False, subtitles=False, progress_cb=None, t
             progress("render", 0, 0, "резервный рендер · GPU-эффекты недоступны: " + str(exc)[:160])
         started = time.perf_counter()
         pipeline.assemble_video(scenes, image_dir, videos, audio, work_dir, target, progress, motion=motion)
+        if overlay and overlay["opacity"] > 0:
+            progress("render", 0, 0, "накладываю видеофутаж · резервный рендер")
+            apply_video_overlay(target, overlay)
         if film_effect != "none":
             progress("render", 0, 0, "накладываю частицы старой плёнки · резервный рендер")
             apply_film_effect(target, film_effect, work_dir, film_intensity=film_intensity)

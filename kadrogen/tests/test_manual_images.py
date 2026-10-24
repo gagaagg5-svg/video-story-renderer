@@ -44,8 +44,10 @@ def main():
     # Test the manual UI/timing contract independently of the graphics driver.
     gpu = ModuleType("gpu_render")
     film_options = []
-    def render(scenes, image_dir, videos, audio, work_dir, output, progress, motion=False, film="none", film_intensity=50):
+    overlay_options = []
+    def render(scenes, image_dir, videos, audio, work_dir, output, progress, motion=False, film="none", film_intensity=50, overlay=None):
         film_options.append((film, film_intensity))
+        overlay_options.append(overlay)
         assemble(scenes, image_dir, videos, audio, work_dir, output, progress, motion)
     gpu.render = render
     sys.modules["gpu_render"] = gpu
@@ -148,6 +150,16 @@ def main():
             raise AssertionError("Invalid film intensity accepted")
         except ValueError:
             pass
+    effect = {"path": str(intro), "opacity": .35, "speed": .5}
+    manual.make_video(str(audio), str(source), preview=True, overlay=effect)
+    assert overlay_options[-1] == effect
+    for bad in ({**effect, "speed": 0}, {**effect, "opacity": 2}, {**effect, "speed": None},
+                {**effect, "opacity": float("nan")}, {**effect, "path": str(root / "missing.mp4")}, "bad"):
+        try:
+            manual.validate_overlay(bad)
+            raise AssertionError("Invalid overlay accepted")
+        except ValueError:
+            pass
     # A missing graphics context must retain the existing FFmpeg path.
     def unavailable(*args, **kwargs):
         raise RuntimeError("No OpenGL driver")
@@ -156,6 +168,10 @@ def main():
     assert Path(fallback).read_bytes() == b"video"
     metrics = json.loads((Path(manual.job_dir(str(audio)) + "_preview") / "render_metrics.json").read_text())
     assert metrics["backend"] == "ffmpeg-fallback"
+    applied = []
+    manual.apply_video_overlay = lambda target, settings: applied.append(settings)
+    manual.make_video(str(audio), str(source), preview=True, overlay=effect)
+    assert applied == [effect]
     print("Manual-image smoke test passed")
 
 

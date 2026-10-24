@@ -138,6 +138,44 @@ def run():
             fake.CANCEL.clear()
         assert protected.read_bytes() == b"previous completed export"
         assert not Path(str(protected) + ".gpu.tmp.mp4").exists()
+        # Black is neutral; screen overlay stays in screen coordinates and loops
+        # at half speed across a scene boundary (source clip is only 0.4 sec).
+        effect = root / "overlay.mp4"
+        ff(["-f", "lavfi", "-i", "color=black:s=320x180:r=25:d=0.4",
+            "-vf", "drawbox=x=160:y=0:w=160:h=90:color=white:t=fill:enable='lt(t,0.2)',"
+                   "drawbox=x=160:y=90:w=160:h=90:color=red:t=fill:enable='gte(t,0.2)'",
+            "-c:v", "libx264", "-crf", "10", effect])
+        for index in (0, 1):
+            Image.new("RGB", (640, 360), (40, 80, 120)).save(images / f"{index:04d}.png")
+        overlay_result = root / "with_overlay.mp4"
+        settings = {"path": str(effect), "opacity": .5, "speed": .5}
+        gpu.render([{"index": 0, "duration": .6}, {"index": 1, "duration": .6}],
+                   str(images), {}, str(audio), tmp, str(overlay_result), lambda *args: None,
+                   overlay=settings, allow_software=True)
+        frames = ff(["-i", overlay_result, "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"])
+        assert len(frames) == 30 * 320 * 180 * 3
+        def sample_at(index):
+            start = index * 320 * 180 * 3
+            return Image.frombytes("RGB", (320, 180), frames[start:start + 320 * 180 * 3])
+        for index in (3, 23):  # 0.12 and 0.92 sec must both show the first phase.
+            picture = sample_at(index)
+            assert all(abs(a-b) < 9 for a,b in zip(picture.getpixel((30,30)), (40,80,120)))
+            assert picture.getpixel((250,30))[0] > 130
+            assert picture.getpixel((250,140))[0] < 55
+        picture = sample_at(13)
+        assert picture.getpixel((250,30))[0] < 55
+        assert picture.getpixel((250,140))[0] > 130
+        assert picture.getpixel((250,140))[2] < 135
+        # Overlay pipe must be terminated on cancellation as well.
+        try:
+            gpu.render(scenes, str(images), {}, str(audio), tmp, str(protected), cancel,
+                       overlay=settings, allow_software=True)
+            raise AssertionError("Overlay cancellation ignored")
+        except Cancelled:
+            pass
+        finally:
+            fake.CANCEL.clear()
+        assert protected.read_bytes() == b"previous completed export"
         # Regression: tiny low-alpha dots used to vanish after H.264 compression.
         # Test the actual encoded Full HD output, not just a non-empty GL buffer.
         fake.W, fake.H = 1920, 1080

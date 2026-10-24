@@ -690,7 +690,7 @@ def run_job(audio, provider, mode, style, use_refs, subtitles=False, motion=Fals
 
 def run_manual_job(audio, folder, motion, subtitles, timing_file=None,
                    intro_video=None, focus_points=None, zoom_seconds=18, film_effect="none",
-                   preview=False, film_intensity=50):
+                   preview=False, film_intensity=50, overlay=None):
     keep_awake(True)
     try:
         with LOCK:
@@ -700,7 +700,7 @@ def run_manual_job(audio, folder, motion, subtitles, timing_file=None,
                                           progress_cb=progress_cb, timing_file=timing_file,
                                           intro_video=intro_video, focus_points=focus_points,
                                           zoom_seconds=zoom_seconds, film_effect=film_effect, preview=preview,
-                                          film_intensity=film_intensity)
+                                          film_intensity=film_intensity, overlay=overlay)
         with LOCK:
             STATE["result"] = result
     except pipeline.Cancelled:
@@ -1086,6 +1086,11 @@ class Api:
                                         file_types=("Видео (*.mp4;*.mov;*.mkv;*.webm)", "Все файлы (*.*)"))
         return (res[0] if isinstance(res, (list, tuple)) else str(res)) if res else ""
 
+    def pick_overlay_video(self):
+        res = WINDOW.create_file_dialog(webview.OPEN_DIALOG, allow_multiple=False,
+                                        file_types=("Футаж на чёрном фоне (*.mp4;*.mov;*.mkv;*.webm)", "Все файлы (*.*)"))
+        return (res[0] if isinstance(res, (list, tuple)) else str(res)) if res else ""
+
     def check_video_encoder(self):
         pipeline.video_encoder_args(force=True)
         status = {"nvenc": bool(pipeline._NVENC_AVAILABLE),
@@ -1241,6 +1246,7 @@ class Api:
             if not os.path.isfile(audio):
                 return {"ok": False, "error": "Выберите файл озвучки MP3."}
             try:
+                overlay = manual_images.validate_overlay(opts.get("overlay"))
                 images = manual_images.list_images(folder)
                 duration = pipeline.audio_duration(audio)
                 manual_images.resolve_full_timing(images, timing_file, duration, intro_video)
@@ -1267,7 +1273,7 @@ class Api:
             thread = threading.Thread(target=run_manual_job,
                                       args=(audio, folder, bool(opts.get("motion")), bool(opts.get("subtitles")),
                                             timing_file, intro_video, focus_points, zoom_seconds, film_effect,
-                                            preview, film_intensity), daemon=True)
+                                            preview, film_intensity, overlay), daemon=True)
             thread.start()
             return {"ok": True}
         audio = (opts.get("audio") or "").strip().strip('"')
