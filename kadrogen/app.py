@@ -65,6 +65,8 @@ STATE = {"running": False, "preparing": False, "stage": "", "done": 0, "total": 
          "scenes": 0, "script": None, "update": None, "queue": None, "queue_active": False}
 QUEUE = []          # задания на ночь: [{id, title, source, script, audio, rewrite, voice, status, result, error}]
 QUEUE_STOP = False  # «Стоп» во время очереди: текущее задание прерывается, следующие не стартуют
+SPEED_CANCEL = threading.Event()
+SPEED_STATE = {"running": False, "path": None, "error": None, "percent": 0}
 
 
 def queue_path():
@@ -1202,7 +1204,7 @@ class Api:
                         "rewrite_words": int(rw["words"]), "rewrite_lang": rw["language"]})
             save_cfg(cfg)
         with LOCK:
-            if STATE["running"] or STATE["preparing"]:
+            if STATE["running"] or STATE["preparing"] or SPEED_STATE["running"]:
                 return {"ok": False, "error": "Программа уже занята."}
             STATE.update({"preparing": True, "stage": "prepare", "done": 0, "total": 0, "message": "распознаю речь",
                           "log": [], "result": None, "error": None, "estimate": None, "cancelled": False, "started_at": time.time()})
@@ -1225,7 +1227,7 @@ class Api:
                     "rewrite_words": int(rw["words"]), "rewrite_lang": rw["language"]})
         save_cfg(cfg)
         with LOCK:
-            if STATE["running"] or STATE["preparing"]:
+            if STATE["running"] or STATE["preparing"] or SPEED_STATE["running"]:
                 return {"ok": False, "error": "Программа уже занята."}
             STATE.update({"preparing": True, "stage": "rewrite", "done": 0, "total": 0, "message": "переписываю сценарий",
                           "log": [], "result": None, "error": None, "script": None, "cancelled": False, "started_at": time.time()})
@@ -1265,7 +1267,7 @@ class Api:
             if opts.get("subtitles") and not preview and not (load_cfg().get("fastgen_api_key") or load_cfg().get("openai_api_key")):
                 return {"ok": False, "error": "Для субтитров добавьте ключ OpenAI или fast-gen либо выключите субтитры."}
             with LOCK:
-                if STATE["running"] or STATE["preparing"]:
+                if STATE["running"] or STATE["preparing"] or SPEED_STATE["running"]:
                     return {"ok": False, "error": "Уже идёт создание видео."}
                 STATE.update({"running": True, "stage": "start", "done": 0, "total": 0, "scenes": len(images),
                               "message": "загружаю свои изображения", "log": [], "result": None,
@@ -1294,7 +1296,7 @@ class Api:
         if err:
             return {"ok": False, "error": err}
         with LOCK:
-            if STATE["running"] or STATE["preparing"]:
+            if STATE["running"] or STATE["preparing"] or SPEED_STATE["running"]:
                 return {"ok": False, "error": "Уже идёт создание видео."}
             STATE.update({"running": True, "stage": "start", "done": 0, "total": 0, "message": "запуск",
                           "log": [], "result": None, "error": None, "cancelled": False, "started_at": time.time()})
@@ -1399,7 +1401,7 @@ class Api:
             todo = [x for x in QUEUE if x.get("status") == "queued"]
             if not todo:
                 return {"ok": False, "error": "Очередь пуста — добавьте хотя бы одно задание."}
-            if STATE["running"] or STATE["preparing"] or STATE.get("queue_active"):
+            if STATE["running"] or STATE["preparing"] or STATE.get("queue_active") or SPEED_STATE["running"]:
                 return {"ok": False, "error": "Уже идёт создание видео."}
             if any(x.get("source") in ("script", "rewrite") for x in todo) and not cfg.get(f"{tts}_api_key") and tts not in ("edge", "fastgen", "royal"):
                 return {"ok": False, "error": f"Для озвучки выбран {tts}, но его ключ не введён."}
@@ -1524,6 +1526,62 @@ class Api:
             return True
         return False
 
+    def create_speed_copy(self, speed=1.2):
+        import speed_copy
+        global SPEED_STATE
+        try:
+            speed = speed_copy.validate_speed(speed)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        with LOCK:
+            if SPEED_STATE["running"] or STATE["running"] or STATE.get("queue_active") or STATE["preparing"]:
+                return {"ok": False, "error": "Дождитесь завершения текущего экспорта."}
+            source = STATE.get("result")
+            if not source or not os.path.isfile(source):
+                return {"ok": False, "error": "Сначала создайте основной ролик."}
+            SPEED_CANCEL.clear()
+            SPEED_STATE = {"running": True, "path": None, "error": None, "percent": 0, "source": source}
+        def worker():
+            global SPEED_STATE
+            keep_awake(True)
+            def progress(percent):
+                global SPEED_STATE
+                with LOCK:
+                    SPEED_STATE = {**SPEED_STATE, "percent": percent}
+            try:
+                result = speed_copy.create(source, speed, pipeline.ffmpeg_bin(), pipeline.video_encoder_args(),
+                                           pipeline.audio_duration(source), progress, SPEED_CANCEL, pipeline.NO_WINDOW)
+                with LOCK:
+                    SPEED_STATE = {**SPEED_STATE, "path": result, "percent": 100}
+            except speed_copy.Cancelled:
+                with LOCK:
+                    SPEED_STATE = {**SPEED_STATE, "error": "Создание копии отменено."}
+            except Exception as exc:
+                with LOCK:
+                    SPEED_STATE = {**SPEED_STATE, "error": str(exc)}
+            finally:
+                with LOCK:
+                    SPEED_STATE = {**SPEED_STATE, "running": False}
+                keep_awake(False)
+        threading.Thread(target=worker, daemon=True).start()
+        return {"ok": True}
+
+    def get_speed_copy(self):
+        with LOCK:
+            return dict(SPEED_STATE)
+
+    def cancel_speed_copy(self):
+        SPEED_CANCEL.set()
+        return True
+
+    def open_speed_copy(self):
+        with LOCK:
+            path = SPEED_STATE.get("path")
+        if path and os.path.isfile(path):
+            os.startfile(path)
+            return True
+        return False
+
     def open_output(self):
         out = os.path.join(data_dir(), "output")
         os.makedirs(out, exist_ok=True)
@@ -1560,7 +1618,7 @@ class Api:
     def clear_jobs(self):
         """Удалить заготовки (картинки, озвучку, клипы) всех заданий. Готовые видео в output не трогаем."""
         with LOCK:
-            if STATE["running"] or STATE["preparing"]:
+            if STATE["running"] or STATE["preparing"] or SPEED_STATE["running"]:
                 return {"ok": False, "error": "Сначала дождитесь окончания или нажмите «Стоп»."}
         jobs = os.path.join(data_dir(), "jobs")
         before = pipeline.dir_size(jobs) if os.path.isdir(jobs) else 0
@@ -1575,7 +1633,7 @@ class Api:
         if data_dir() != app_dir():
             return {"ok": False, "error": "noport"}
         with LOCK:
-            if STATE["running"] or STATE["preparing"]:
+            if STATE["running"] or STATE["preparing"] or SPEED_STATE["running"]:
                 return {"ok": False, "error": "busy"}
             STATE["update"] = {"phase": "download", "done": 0, "total": 0, "version": version, "error": None}
         threading.Thread(target=run_update, args=(url, version), daemon=True).start()
@@ -1639,14 +1697,17 @@ def on_loaded():
 
 def on_closing():
     with LOCK:
-        running = STATE["running"]
+        running = STATE["running"] or SPEED_STATE["running"]
         upd = dict(STATE.get("update") or {})
     if running:
-        ok = WINDOW.create_confirm_dialog("Kadro.Gen", "Видео ещё создаётся. Закрыть программу? Прогресс сохранится — "
-                                                      "при следующем запуске того же mp3 работа продолжится.")
+        message = ("Ускоренная копия ещё создаётся. Закрыть программу и прервать её экспорт? Основной ролик сохранится."
+                   if SPEED_STATE["running"] else
+                   "Видео ещё создаётся. Закрыть программу? Прогресс сохранится — при следующем запуске того же mp3 работа продолжится.")
+        ok = WINDOW.create_confirm_dialog("Kadro.Gen", message)
         if not ok:
             return False
         pipeline.CANCEL.set()
+        SPEED_CANCEL.set()
     if upd.get("phase") == "ready" and upd.get("src") and data_dir() == app_dir():
         try:
             launch_helper(upd["src"])  # скачанное заранее обновление встанет, пока программа закрыта

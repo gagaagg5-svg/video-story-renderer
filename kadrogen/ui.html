@@ -497,7 +497,15 @@
         <div style="margin-top:auto; padding-top:16px; display:flex; gap:8px; flex-wrap:wrap"><button id="btn_cancel" class="danger" onclick="cancelJob()" data-i18n="stop"></button><button id="btn_again" class="ghost" onclick="go(4)" disabled data-i18n="again"></button><button id="btn_report" class="ghost" onclick="sendReport()" data-i18n="report"></button></div>
       </div>
       <div class="panel"><h3 id="g_title"></h3><div class="frames" id="frames"></div>
-        <div id="result" class="result"><b data-i18n="done"></b><div class="path" id="r_path"></div><button class="primary" onclick="pywebview.api.open_result()" data-i18n="open"></button> <button class="ghost" onclick="pywebview.api.open_output()" data-i18n="folder"></button></div>
+        <div id="result" class="result"><b data-i18n="done"></b><div class="path" id="r_path"></div><button class="primary" onclick="pywebview.api.open_result()" data-i18n="open"></button> <button class="ghost" onclick="pywebview.api.open_output()" data-i18n="folder"></button>
+          <div style="margin-top:18px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+            <label for="copy_speed" data-i18n="copy_speed_label"></label>
+            <input id="copy_speed" type="number" min="1.01" max="2" step="0.01" value="1.2" style="width:90px">
+            <button id="copy_speed_button" onclick="createSpeedCopy()" data-i18n="copy_speed_button"></button>
+            <button id="copy_speed_cancel" class="ghost" onclick="pywebview.api.cancel_speed_copy()" data-i18n="stop" style="display:none"></button>
+            <button id="copy_speed_open" class="ghost" onclick="pywebview.api.open_speed_copy()" data-i18n="copy_speed_open" style="display:none"></button>
+          </div><div class="note" data-i18n="copy_speed_hint" style="margin-top:8px"></div><div class="path" id="copy_speed_status" style="margin-top:8px"></div>
+        </div>
         <div id="error" class="status err"></div><details><summary data-i18n="log"></summary><pre id="log"></pre></details>
       </div>
     </div>
@@ -564,6 +572,8 @@ const I18N = {
        tip_subs:'Voice-over text is burned into the video with exact timing: lines up to 42 characters, no flicker on pauses. An .srt file is saved next to the video.',
        tip_motion:'Transitions between scenes: zoom and smooth slides left, right, up or down. Render time depends on the GPU and the video length.'}
 };
+Object.assign(I18N.ru, {copy_speed_label:'Скорость второй версии',copy_speed_button:'Создать ускоренную копию',copy_speed_open:'Открыть вторую версию',copy_speed_hint:'Ускоряет изображение и озвучку, сохраняя высоту голоса. Основной ролик остаётся отдельным файлом.',copy_speed_busy:'Создаю вторую версию: '});
+Object.assign(I18N.en, {copy_speed_label:'Second version speed',copy_speed_button:'Create faster copy',copy_speed_open:'Open second version',copy_speed_hint:'Speeds up video and audio while preserving voice pitch. Keeps the original file.',copy_speed_busy:'Creating second version: '});
 let L = 'ru';
 const t = k => I18N[L][k];
 const TTS_PH = {voicegen:'VoiceGen key (Telegram bot)', voicer:'Voicer token', lumean:'Lumean key'};
@@ -948,6 +958,22 @@ async function start(o) {
 async function cancelJob() { $('btn_cancel').disabled = true; await pywebview.api.cancel(); }
 let shownPct = 0, animating = false;
 function animatePct(target) { if (animating) return; animating = true; const step = () => { if (shownPct < target) { shownPct = Math.min(target, shownPct + 1); $('p_pct').textContent = shownPct + '%'; requestAnimationFrame(step); } else animating = false; }; step(); }
+let speedCopyTimer = null;
+async function createSpeedCopy() {
+  const r = await pywebview.api.create_speed_copy(Number($('copy_speed').value.replace(',', '.')));
+  if (!r.ok) { toast(r.error); return; }
+  refreshSpeedCopy();
+}
+async function refreshSpeedCopy() {
+  if (speedCopyTimer) clearTimeout(speedCopyTimer);
+  const st = await pywebview.api.get_speed_copy();
+  $('copy_speed_button').disabled = st.running;
+  $('copy_speed').disabled = st.running;
+  $('copy_speed_cancel').style.display = st.running ? '' : 'none';
+  $('copy_speed_open').style.display = st.path && !st.running ? '' : 'none';
+  $('copy_speed_status').textContent = st.running ? t('copy_speed_busy') + st.percent + '%' : (st.error || st.path || '');
+  if (st.running) speedCopyTimer = setTimeout(refreshSpeedCopy, 1000);
+}
 let lastQueueId = null;
 function queueSummary(st) {
   const items = st.queue_items || [], done = items.filter(x => x.status === 'done').length;
@@ -987,6 +1013,7 @@ async function poll() {
   else if (st.result && !st.queue_active) { $('result').classList.add('show'); $('r_path').textContent = st.result; $('g_title').textContent = t('frames_done'); }
   if (st.error) { $('error').textContent = t('error') + st.error; $('p_err').textContent = st.error; $('btn_again').textContent = t('to_settings'); } else { $('p_err').textContent = ''; $('btn_again').textContent = t('again'); }
   if (st.cancelled) $('error').textContent = t('stopped');
+  if (st.result && !st.running && !st.queue_active) refreshSpeedCopy();
   if (st.running || st.queue_active) setTimeout(poll, 1400); else { $('btn_again').disabled = false; $('btn_cancel').disabled = true; }
 }
 async function loadConfig(keepScreen) {

@@ -55,6 +55,8 @@ jobs:
         run: python packaging/download_ffmpeg.py
       - name: Test zoom, slides, and encoder fallback
         run: python tests/test_native_render.py
+      - name: Test accelerated copies and preserved audio pitch
+        run: python tests/test_speed_copy.py
       - name: Test GPU composition if a graphics driver is available
         run: python tests/test_gpu_render.py
       - name: Build standalone application
