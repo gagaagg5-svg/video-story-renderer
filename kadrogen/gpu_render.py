@@ -33,6 +33,8 @@ FRAGMENT = """
 #version 330
 uniform sampler2D current_image;
 uniform sampler2D next_image;
+uniform sampler2D overlay_image;
+uniform float overlay_opacity;
 uniform vec3 crop_a;
 uniform vec3 crop_b;
 uniform float progress;
@@ -41,7 +43,7 @@ in vec2 uv;
 out vec4 color;
 vec4 a(vec2 p) { return texture(current_image, crop_a.xy + p * crop_a.z); }
 vec4 b(vec2 p) { return texture(next_image, crop_b.xy + p * crop_b.z); }
-void main() {
+void scene() {
     if (progress <= 0.0) { color = a(uv); return; }
     float p = progress * progress * (3.0 - 2.0 * progress);
     if (transition == 0) {
@@ -58,6 +60,13 @@ void main() {
         if (all(greaterThanEqual(q, vec2(0.0))) && all(lessThanEqual(q, vec2(1.0))))
             color = a(q);
         else color = b(uv + direction * (p - 1.0));
+    }
+}
+void main() {
+    scene();
+    if (overlay_opacity > 0.0) {
+        vec3 effect = texture(overlay_image, uv).rgb * overlay_opacity;
+        color.rgb = effect + color.rgb * (1.0 - effect);
     }
 }
 """
@@ -82,16 +91,6 @@ in vec3 appearance;
 out vec4 color;
 void main() {
     color = vec4(vec3(appearance.y), texture(atlas, uv).a * appearance.x);
-}
-"""
-OVERLAY_FRAGMENT = """
-#version 330
-uniform sampler2D footage;
-uniform float opacity;
-in vec2 uv;
-out vec4 color;
-void main() {
-    color = vec4(texture(footage, uv).rgb * opacity, 1.0);
 }
 """
 
@@ -142,6 +141,9 @@ class Composer:
             self.vao = self.ctx.vertex_array(self.program, [])
             self.program["current_image"] = 0
             self.program["next_image"] = 1
+            self.program["overlay_image"] = 3
+            self.blank_overlay = self.ctx.texture((1, 1), 3, bytes(3))
+            self.blank_overlay.use(3)
             self.textures = {}
             self.particles = []
             self.overlay_texture = None
@@ -283,13 +285,10 @@ class Composer:
         self.program["crop_b"] = crop_b
         self.program["progress"] = progress
         self.program["transition"] = transition
-        self.vao.render(vertices=3)
+        self.program["overlay_opacity"] = 0.0
         if (overlay_pixels is not None or self.overlay_cache) and overlay_opacity > 0:
             if self.overlay_texture is None:
                 self.overlay_texture = self.ctx.texture((self.width, self.height), 3) if not self.overlay_cache else self.overlay_cache[0]
-                self.overlay_program = self.ctx.program(vertex_shader=VERTEX, fragment_shader=OVERLAY_FRAGMENT)
-                self.overlay_program["footage"] = 3
-                self.overlay_vao = self.ctx.vertex_array(self.overlay_program, [])
             if self.overlay_cache:
                 # Native frames are held at slower speeds and skipped at faster
                 # speeds; the cache loops independently of image boundaries.
@@ -301,12 +300,10 @@ class Composer:
             else:
                 self.overlay_texture.write(overlay_pixels, alignment=1)
                 self.overlay_texture.use(3)
-            self.overlay_program["opacity"] = overlay_opacity
-            self.ctx.enable(self.gl.BLEND)
-            # Screen: source + destination * (1 - source). Black is neutral.
-            self.ctx.blend_func = self.gl.ONE, self.gl.ONE_MINUS_SRC_COLOR
-            self.overlay_vao.render(vertices=3)
-            self.ctx.disable(self.gl.BLEND)
+            self.program["overlay_opacity"] = overlay_opacity
+        # One framebuffer write: image, motion, transition and footage are
+        # composed together. Avoid a second fullscreen draw and blend barrier.
+        self.vao.render(vertices=3)
         if self.particles:
             data = []
             for x0, y0, offset, dx, dy, opacity, fibre, value, size, length in self.particles:
@@ -404,14 +401,18 @@ def render(scenes, img_dir, videos, audio, work_dir, output, progress,
         watcher = threading.Thread(target=cancel_pipes, daemon=True)
         watcher.start()
         reported = 0.0
+        timings = {"image_upload_seconds": 0.0, "compose_readback_seconds": 0.0,
+                   "encoder_pipe_seconds": 0.0, "overlay_stream_read_seconds": 0.0}
         for i, scene in enumerate(scenes):
             pipeline.check_cancel()
             key = scene["index"]
             next_key = scenes[i + 1]["index"] if i + 1 < len(scenes) else key
+            prepared_at = time.perf_counter()
             composer.keep({key, next_key})
             next_texture = (composer.image(next_key, os.path.join(img_dir, f"{next_key:04d}.png"))
                             if i + 1 < len(scenes) else None)
             texture = None if key in videos else composer.image(key, os.path.join(img_dir, f"{key:04d}.png"))
+            timings["image_upload_seconds"] += time.perf_counter() - prepared_at
             length = boundaries[i + 1] - boundaries[i]
             incoming = overlaps[i]
             outgoing = overlaps[i + 1] if i + 1 < len(scenes) else 0
@@ -431,14 +432,20 @@ def render(scenes, img_dir, videos, audio, work_dir, output, progress,
                 frame = boundaries[i] + local
                 overlay_pixels = None
                 if overlay_decoder:
+                    overlay_read_at = time.perf_counter()
                     overlay_pixels = overlay_decoder.stdout.read(width * height * 3)
                     if len(overlay_pixels) != width * height * 3:
                         raise RuntimeError("Не удалось прочитать футаж. Проверьте видеофайл эффекта.")
+                    timings["overlay_stream_read_seconds"] += time.perf_counter() - overlay_read_at
+                compose_at = time.perf_counter()
                 pixels = composer.draw(texture, next_texture or texture, crop_a, crop_b,
                                        fraction, i % 5, frame / fps, overlay_pixels,
                                        overlay["opacity"] if overlay else 0)
+                timings["compose_readback_seconds"] += time.perf_counter() - compose_at
+                pipe_at = time.perf_counter()
                 encoder.stdin.write(pixels)
                 now = time.perf_counter()
+                timings["encoder_pipe_seconds"] += now - pipe_at
                 if now - reported >= 1.0:
                     elapsed = now - started
                     speed = (frame + 1) / fps / max(elapsed, 0.001)
@@ -450,6 +457,7 @@ def render(scenes, img_dir, videos, audio, work_dir, output, progress,
                 decoder.stdout.close()
                 if decoder.wait(timeout=30) != 0:
                     raise RuntimeError("Ошибка чтения вступительного видео.")
+        finish_at = time.perf_counter()
         encoder.stdin.close()
         if overlay_decoder:
             overlay_decoder.stdout.close()
@@ -457,17 +465,23 @@ def render(scenes, img_dir, videos, audio, work_dir, output, progress,
                 raise RuntimeError("Ошибка чтения футажа.")
         if encoder.wait(timeout=120) != 0:
             raise RuntimeError("Ошибка кодирования GPU-рендера.")
+        timings["encoder_finish_seconds"] = time.perf_counter() - finish_at
         pipeline.check_cancel()
         os.replace(tmp, output)
         metrics = {"backend": "opengl-single-pass", "graphics": composer.renderer,
                    "film_effect": film, "film_intensity": film_intensity,
                    "overlay": overlay,
+                   "composition": "fused-overlay-shader",
+                   "timings": {k: round(v, 3) for k, v in timings.items()},
                    "overlay_backend": 'gpu-cache' if cached_overlay else 'stream' if overlay_decoder else 'none',
                    "overlay_cache_frames": len(composer.overlay_cache),
                    "overlay_cache_bytes": composer.overlay_cache_bytes,
                    "overlay_prepare_seconds": round(cache_seconds, 3),
                    "encoder": encoder_name, "frames": total, "video_seconds": total / fps,
                    "elapsed_seconds": round(time.perf_counter() - started, 3)}
+        progress("render", total, total,
+                 f"замеры: картинки {timings['image_upload_seconds']:.1f} с · композиция и чтение GPU {timings['compose_readback_seconds']:.1f} с · "
+                 f"передача кодировщику {timings['encoder_pipe_seconds']:.1f} с · завершение {timings['encoder_finish_seconds']:.1f} с")
         pipeline.write_json(os.path.join(work_dir, "render_metrics.json"), metrics)
         progress("render", total, total, f"готово за {metrics['elapsed_seconds']:.1f} с · один проход")
         return metrics

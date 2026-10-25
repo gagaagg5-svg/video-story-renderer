@@ -82,6 +82,15 @@ def run():
         output = Image.frombytes("RGB", (320, 180), bytes(composer.draw(a, b, (0, 0, 1), (0, 0, 1), .5, 1, 0)))
         assert output.getpixel((300, 90))[1] >= 120
         assert output.getpixel((20, 90))[2] > 240
+        # Screen blend is fused into the scene shader, including transitions.
+        base = Image.frombytes("RGB", (320,180), bytes(composer.draw(a,b,(0,0,1),(0,0,1),.5,1,0)))
+        layer = bytes((128,64,32)) * 320 * 180
+        mixed = Image.frombytes("RGB", (320,180), bytes(composer.draw(a,b,(0,0,1),(0,0,1),.5,1,0,layer,.4)))
+        for point in ((20,20),(160,90),(300,140)):
+            expected = [round(effect*.4 + value*(1-effect*.4/255)) for value,effect in zip(base.getpixel(point),(128,64,32))]
+            assert all(abs(actual-want)<=2 for actual,want in zip(mixed.getpixel(point),expected))
+        reset = bytes(composer.draw(a,b,(0,0,1),(0,0,1),.5,1,0,layer,0))
+        assert reset == base.tobytes(), "Disabled footage changed the base image"
         renderer = composer.renderer
         composer.close()
         # Dust must change pixels gently and repeat without a jump at 8 seconds.
