@@ -166,6 +166,23 @@ def run():
         assert picture.getpixel((250,30))[0] < 55
         assert picture.getpixel((250,140))[0] > 130
         assert picture.getpixel((250,140))[2] < 135
+        # Cached playback must match the streaming pixels, speed and loop phase.
+        cache_scene = [{"index": 0, "duration": 3.2}]
+        for speed in (.5, 1.0, 1.2, 2.0):
+            settings["speed"] = speed
+            cached = root / f"cached_{speed}.mp4"
+            streamed = root / f"streamed_{speed}.mp4"
+            cm = gpu.render(cache_scene, str(images), {}, str(audio), tmp, str(cached), lambda *args: None,
+                            overlay=settings, allow_software=True)
+            sm = gpu.render(cache_scene, str(images), {}, str(audio), tmp, str(streamed), lambda *args: None,
+                            overlay={**settings, "cache": False}, allow_software=True)
+            assert cm["overlay_backend"] == "gpu-cache", cm
+            assert cm["overlay_cache_frames"] == 10, cm
+            assert sm["overlay_backend"] == "stream", sm
+            cp = ff(["-i", cached, "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"])
+            sp = ff(["-i", streamed, "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"])
+            assert cp == sp, f"Overlay changed at speed {speed}"
+        settings["speed"] = .5
         # Overlay pipe must be terminated on cancellation as well.
         try:
             gpu.render(scenes, str(images), {}, str(audio), tmp, str(protected), cancel,
@@ -200,3 +217,4 @@ def run():
 
 if __name__ == "__main__":
     run()
+

@@ -337,7 +337,10 @@ def validate_overlay(options):
         intro_duration(path)  # Checks that a readable video track actually exists.
     except ValueError as exc:
         raise ValueError("Не удалось прочитать видеофайл футажа.") from exc
-    return {"path": os.path.abspath(path), "opacity": opacity, "speed": speed}
+    result = {"path": os.path.abspath(path), "opacity": opacity, "speed": speed}
+    if 'cache' in options:
+        result['cache'] = bool(options['cache'])
+    return result
 
 
 def apply_video_overlay(video_path, overlay):
@@ -549,6 +552,7 @@ def make_video(audio, folder, motion=False, subtitles=False, progress_cb=None, t
     pipeline.cleanup_job(work_dir)
     progress("done", 1, 1, f"готово: {result}")
     return result
+
 
 
 

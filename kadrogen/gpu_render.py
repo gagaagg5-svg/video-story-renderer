@@ -5,6 +5,7 @@ full-length transition encode or separate film pass. Raw frames cross to FFmpeg
 through RAM; this is deliberately not advertised as zero-copy NVENC.
 """
 import math
+import json
 import os
 import random
 import struct
@@ -13,6 +14,7 @@ import sys
 import tempfile
 import threading
 import time
+from fractions import Fraction
 
 from PIL import Image, ImageDraw
 import pipeline
@@ -143,6 +145,8 @@ class Composer:
             self.textures = {}
             self.particles = []
             self.overlay_texture = None
+            self.overlay_cache = []
+            self.overlay_cache_bytes = 0
             self.film_gain = max(0.0, min(100.0, float(film_intensity))) / 50.0
             if film != "none" and self.film_gain > 0:
                 self._init_dust(film)
@@ -199,6 +203,78 @@ class Composer:
             if key not in keys:
                 self.textures.pop(key).release()
 
+    def cache_overlay(self, overlay, progress, budget=1024 * 1024 * 1024):
+        """Decode a short CFR source once; reuse full-resolution GPU textures.
+
+        Keep the native source cadence (including duplicate frames at slow
+        playback). Long clips or failed allocations retain the streaming path.
+        Count four GPU bytes per pixel conservatively even though input is RGB.
+        """
+        process = None
+        done = threading.Event()
+        watcher = None
+        try:
+            executable = pipeline.ffmpeg_bin()
+            probe = os.path.join(os.path.dirname(executable), 'ffprobe.exe') if executable.lower().endswith('.exe') else 'ffprobe'
+            data = json.loads(subprocess.check_output(
+                [probe, '-v', 'error', '-select_streams', 'v:0', '-show_entries',
+                 'stream=avg_frame_rate,r_frame_rate,duration:format=duration', '-of', 'json', overlay['path']],
+                creationflags=pipeline.NO_WINDOW, timeout=15))
+            stream = data['streams'][0]
+            rate = Fraction(stream['avg_frame_rate'])
+            if rate <= 0 or rate > 120 or rate != Fraction(stream['r_frame_rate']):
+                return False
+            duration = float(stream.get('duration') or data['format']['duration'])
+            limit = budget // (self.width * self.height * 4)
+            if not math.isfinite(duration) or duration <= 0 or math.ceil(duration * float(rate)) > limit:
+                return False
+            self.overlay_rate = float(rate)
+            self.overlay_speed = overlay['speed']
+            progress('render', 0, 0, 'готовлю короткий футаж в памяти видеокарты · без уменьшения разрешения')
+            with tempfile.TemporaryFile() as log:
+                process = subprocess.Popen(
+                    [executable, '-v', 'error', '-i', overlay['path'], '-vf',
+                     f'scale={self.width}:{self.height},setsar=1,fps={rate}',
+                     '-an', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1'],
+                    stdout=subprocess.PIPE, stderr=log, creationflags=pipeline.NO_WINDOW)
+                def watch():
+                    while not done.wait(.1):
+                        if pipeline.CANCEL.is_set():
+                            _stop(process)
+                            return
+                watcher = threading.Thread(target=watch, daemon=True)
+                watcher.start()
+                while True:
+                    pipeline.check_cancel()
+                    pixels = process.stdout.read(self.width * self.height * 3)
+                    if not pixels:
+                        break
+                    if len(pixels) != self.width * self.height * 3 or len(self.overlay_cache) >= limit:
+                        raise RuntimeError('Футаж не помещается в кэш')
+                    texture = self.ctx.texture((self.width, self.height), 3, pixels, alignment=1)
+                    texture.filter = (self.gl.LINEAR, self.gl.LINEAR)
+                    texture.repeat_x = texture.repeat_y = False
+                    self.overlay_cache.append(texture)
+                if process.wait(timeout=30) != 0 or not self.overlay_cache:
+                    raise RuntimeError('Не удалось подготовить футаж')
+            self.overlay_cache_bytes = len(self.overlay_cache) * self.width * self.height * 4
+            progress('render', 0, 0, f'футаж загружен в GPU · {len(self.overlay_cache)} кадров · повтор без чтения файла')
+            return True
+        except Exception:
+            for texture in self.overlay_cache:
+                texture.release()
+            self.overlay_cache.clear()
+            self.overlay_cache_bytes = 0
+            pipeline.check_cancel()
+            return False
+        finally:
+            done.set()
+            _stop(process)
+            if process and process.stdout:
+                process.stdout.close()
+            if watcher:
+                watcher.join(timeout=2)
+
     def draw(self, current, following, crop_a, crop_b, progress, transition, seconds,
              overlay_pixels=None, overlay_opacity=0.3):
         current.use(0)
@@ -208,14 +284,23 @@ class Composer:
         self.program["progress"] = progress
         self.program["transition"] = transition
         self.vao.render(vertices=3)
-        if overlay_pixels is not None and overlay_opacity > 0:
+        if (overlay_pixels is not None or self.overlay_cache) and overlay_opacity > 0:
             if self.overlay_texture is None:
-                self.overlay_texture = self.ctx.texture((self.width, self.height), 3)
+                self.overlay_texture = self.ctx.texture((self.width, self.height), 3) if not self.overlay_cache else self.overlay_cache[0]
                 self.overlay_program = self.ctx.program(vertex_shader=VERTEX, fragment_shader=OVERLAY_FRAGMENT)
                 self.overlay_program["footage"] = 3
                 self.overlay_vao = self.ctx.vertex_array(self.overlay_program, [])
-            self.overlay_texture.write(overlay_pixels, alignment=1)
-            self.overlay_texture.use(3)
+            if self.overlay_cache:
+                # Native frames are held at slower speeds and skipped at faster
+                # speeds; the cache loops independently of image boundaries.
+                # Match FFmpeg fps's nearest timestamp rounding (half ties go
+                # forward), including non-integer speeds such as 1.2x.
+                index = max(0, math.ceil((seconds + .5 / pipeline.FPS) * self.overlay_speed *
+                                         self.overlay_rate - 1e-8) - 1) % len(self.overlay_cache)
+                self.overlay_cache[index].use(3)
+            else:
+                self.overlay_texture.write(overlay_pixels, alignment=1)
+                self.overlay_texture.use(3)
             self.overlay_program["opacity"] = overlay_opacity
             self.ctx.enable(self.gl.BLEND)
             # Screen: source + destination * (1 - source). Black is neutral.
@@ -253,7 +338,8 @@ def _stop(process):
 
 
 def render(scenes, img_dir, videos, audio, work_dir, output, progress,
-           motion=False, film="none", allow_software=False, film_intensity=50, overlay=None):
+           motion=False, film="none", allow_software=False, film_intensity=50, overlay=None,
+           overlay_cache_budget=1024 * 1024 * 1024):
     """Returns render metrics. Raises on failure so the caller can use FFmpeg fallback."""
     started = time.perf_counter()
     width, height, fps = pipeline.W, pipeline.H, pipeline.FPS
@@ -269,6 +355,10 @@ def render(scenes, img_dir, videos, audio, work_dir, output, progress,
     overlay_log = tempfile.TemporaryFile()
     watcher = None
     try:
+        cache_started = time.perf_counter()
+        cached_overlay = bool(overlay and overlay.get('cache', True) and overlay['opacity'] > 0 and overlay_cache_budget > 0 and
+                              composer.cache_overlay(overlay, progress, overlay_cache_budget))
+        cache_seconds = time.perf_counter() - cache_started
         enc = pipeline.video_encoder_args()
         encoder_name = enc[enc.index("-c:v") + 1]
         film_label = f" · плёнка: {film}, {film_intensity:g}%" if film != "none" else ""
@@ -283,7 +373,7 @@ def render(scenes, img_dir, videos, audio, work_dir, output, progress,
                 "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", tmp]
         encoder = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
                                    stderr=encoder_log, creationflags=pipeline.NO_WINDOW)
-        if overlay and overlay["opacity"] > 0:
+        if overlay and overlay["opacity"] > 0 and not cached_overlay:
             vf = (f"setpts=(PTS-STARTPTS)/{overlay['speed']:.8f},"
                   f"scale={width}:{height},setsar=1,fps={fps}")
             overlay_decoder = subprocess.Popen(
@@ -372,6 +462,10 @@ def render(scenes, img_dir, videos, audio, work_dir, output, progress,
         metrics = {"backend": "opengl-single-pass", "graphics": composer.renderer,
                    "film_effect": film, "film_intensity": film_intensity,
                    "overlay": overlay,
+                   "overlay_backend": 'gpu-cache' if cached_overlay else 'stream' if overlay_decoder else 'none',
+                   "overlay_cache_frames": len(composer.overlay_cache),
+                   "overlay_cache_bytes": composer.overlay_cache_bytes,
+                   "overlay_prepare_seconds": round(cache_seconds, 3),
                    "encoder": encoder_name, "frames": total, "video_seconds": total / fps,
                    "elapsed_seconds": round(time.perf_counter() - started, 3)}
         pipeline.write_json(os.path.join(work_dir, "render_metrics.json"), metrics)
@@ -403,3 +497,4 @@ def render(scenes, img_dir, videos, audio, work_dir, output, progress,
         composer.close()
         if os.path.exists(tmp):
             os.remove(tmp)
+
