@@ -37,6 +37,11 @@ def run(report_path):
                 subprocess.run([pipeline.ffmpeg_bin(), "-y", "-v", "error", "-f", "lavfi", "-i",
                                 "color=c=green:s=320x180:r=25:d=1", "-c:v", "libx264", str(intro)],
                                check=True, creationflags=pipeline.NO_WINDOW, timeout=30)
+                import video_loop
+                looped = video_loop.create(str(intro), 3, str(root / "loops"),
+                                           music={"tracks": [str(audio)], "volume": 20})
+                assert abs(pipeline.audio_duration(looped) - 3) < 0.15
+                report["video_loop"] = True
                 timing = root / "timing.csv"
                 timing.write_text("filename,duration_seconds\nintro.mp4,1\n002.png,1\n001.png,1\n", encoding="utf-8")
                 output = manual_images.make_video(str(audio), str(images), timing_file=str(timing), motion=True,
@@ -69,5 +74,6 @@ def run(report_path):
         report["error"] = traceback.format_exc()
     Path(report_path).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return 0 if report["ok"] else 1
+
 
 

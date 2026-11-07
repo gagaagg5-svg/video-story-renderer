@@ -43,7 +43,7 @@ import endpoints
 import pipeline
 import manual_images
 
-VERSION = "1.7.1-custom-images"
+VERSION = "1.7.2-video-loop"
 # Публичная папка Google Диска с архивами VideoGen-x.y.z.zip. Программа при запуске смотрит список файлов
 # и предлагает скачать самую свежую версию. Пусто — проверка выключена.
 UPDATE_FOLDER_ID = ""  # An official update must not overwrite this customized build.
@@ -728,6 +728,29 @@ def run_manual_job(audio, folder, motion, subtitles, timing_file=None,
         keep_awake(False)
 
 
+def run_loop_job(source, seconds, keep_audio, music):
+    import video_loop
+    keep_awake(True)
+    try:
+        result = video_loop.create(source, seconds, os.path.join(data_dir(), "output"),
+                                   keep_audio, music, progress_cb)
+        with LOCK:
+            STATE["result"] = result
+    except pipeline.Cancelled:
+        with LOCK:
+            STATE["cancelled"] = True
+            STATE["message"] = "остановлено"
+    except Exception as exc:
+        with LOCK:
+            STATE["error"] = f"{type(exc).__name__}: {exc}"
+            STATE["log"].append(traceback.format_exc()[-1500:])
+    finally:
+        with LOCK:
+            STATE["running"] = False
+            STATE["ended_at"] = time.time()
+        keep_awake(False)
+
+
 def _vtuple(v):
     return tuple(int(x) for x in v.split(".") if x.isdigit())
 
@@ -1245,6 +1268,28 @@ class Api:
             STATE.update({"preparing": True, "stage": "rewrite", "done": 0, "total": 0, "message": "переписываю сценарий",
                           "log": [], "result": None, "error": None, "script": None, "cancelled": False, "started_at": time.time()})
         threading.Thread(target=run_rewrite, args=(rw,), daemon=True).start()
+        return {"ok": True}
+
+    def start_loop(self, opts):
+        import video_loop
+        import music_mix
+        try:
+            source, seconds = video_loop.validate(opts.get("source"), opts.get("seconds"))
+            music = music_mix.validate(opts.get("music"))
+        except (ValueError, TypeError) as exc:
+            return {"ok": False, "error": str(exc)}
+        with LOCK:
+            if STATE["running"] or STATE["preparing"] or STATE["queue_active"] or SPEED_STATE["running"]:
+                return {"ok": False, "error": "Сначала дождитесь текущего экспорта."}
+            pipeline.CANCEL.clear()
+            pipeline.LAST_JOB_DIR = None
+            STATE.update({"running": True, "stage": "render", "done": 0, "total": 100,
+                          "scenes": 0, "job_dir": None, "queue": None, "result": None,
+                          "error": None, "cancelled": False, "log": [], "ended_at": None,
+                          "message": "подготавливаю повтор видео", "started_at": time.time()})
+            SPEED_STATE.update({"path": None, "error": None, "percent": 0})
+        threading.Thread(target=run_loop_job,
+                         args=(source, seconds, bool(opts.get("keep_audio")), music), daemon=True).start()
         return {"ok": True}
 
     def start(self, opts):
@@ -1820,6 +1865,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 

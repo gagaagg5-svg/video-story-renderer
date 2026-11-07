@@ -74,7 +74,7 @@ def apply(video_path, options, progress=None):
     channels = int(subprocess.check_output(
         [pipeline.ffmpeg_bin('ffprobe'), '-v', 'error', '-select_streams', 'a:0',
          '-show_entries', 'stream=channels', '-of', 'csv=p=0', video_path],
-        creationflags=pipeline.NO_WINDOW, timeout=15).strip())
+        creationflags=pipeline.NO_WINDOW, timeout=15).strip() or 0)
     voice_layout = 'pan=stereo|c0=c0|c1=c0' if channels == 1 else 'aformat=channel_layouts=stereo'
     # Normalize just the short playlist once. The final mix loops it as a stream,
     # so memory and temporary audio size do not grow with the full video length.
@@ -90,7 +90,9 @@ def apply(video_path, options, progress=None):
         _run([*inputs, '-filter_complex', ';'.join(filters), '-map', '[out]', '-c:a', 'flac', playlist])
         progress('music', 1, 2, f'музыка {settings["volume"]:g}% · повторяю плейлист до конца ролика')
         fade = min(2, duration / 2)
-        filters = (f'[0:a:0]aresample=48000,{voice_layout},asetpts=PTS-STARTPTS,apad[voice];'
+        voice = (f'[0:a:0]aresample=48000,{voice_layout},asetpts=PTS-STARTPTS,apad[voice];'
+                 if channels else f'anullsrc=r=48000:cl=stereo,atrim=duration={duration:.8f}[voice];')
+        filters = (voice +
                    f'[1:a:0]volume={settings["volume"] / 100:.8f},afade=t=in:d={min(.5, duration / 2):.8f},'
                    f'afade=t=out:st={duration-fade:.8f}:d={fade:.8f}[music];'
                    '[voice][music]amix=inputs=2:duration=first:normalize=0,'
@@ -102,3 +104,4 @@ def apply(video_path, options, progress=None):
         os.replace(output, video_path)
     progress('music', 2, 2, 'музыка добавлена')
     return video_path
+

@@ -1,0 +1,26 @@
+const { chromium }=require('playwright');
+(async()=>{
+const browser=await chromium.launch({headless:true,args:['--no-sandbox']});
+const page=await browser.newPage({viewport:{width:1280,height:800}});let errors=[];
+page.on('pageerror',e=>errors.push(e.message));
+await page.goto(require('url').pathToFileURL(require('path').resolve(__dirname,'../ui.html')).href);
+await page.evaluate(()=>{window.pywebview={api:{save_config:async()=>{},pick_intro_video:async()=>'/test/video.mp4',pick_music_tracks:async()=>['/test/a.mp3','/test/b.mp3'],start_loop:async o=>{window.sentLoop=o;return {ok:true}},get_state:async()=>({stage:'done',done:1,total:1,result:'/out/loop.mp4',running:false,log:[],elapsed:4}),gallery:async()=>({total:0,items:[]}),get_speed_copy:async()=>({running:false,path:null,percent:0})}};applyLang();});
+await page.locator('#screen1 [data-i18n="loop_title"]').click();
+await page.waitForSelector('#screen7.active');
+await page.locator('#screen7 [data-i18n="loop_pick"]').click();
+await page.locator('#screen7 [data-i18n="render_music_add"]').click();
+await page.locator('#loop_music_list button[aria-label="Move down"]').first().click();
+await page.locator('#loop_audio').check();
+await page.evaluate(()=>setLoopVolume(33));
+await page.screenshot({path:'video-loop-ui.png'});
+await page.locator('#loop_start').click();
+await page.waitForSelector('#screen6.active');
+const sent=await page.evaluate(()=>window.sentLoop);
+if(sent.seconds!==7200||sent.music.volume!==33||sent.music.tracks[0]!=='/test/b.mp3'||!sent.keep_audio)throw Error(JSON.stringify(sent));
+await page.locator('#btn_again').click();await page.waitForSelector('#screen7.active');
+await page.locator('#loop_minutes').fill('60');await page.locator('#loop_start').click();
+if(!await page.locator('#loop_error').textContent())throw Error('No validation');
+if(errors.length)throw Error(errors.join('\n'));
+console.log('UI passed: entry, file, playlist order, duration, audio, volume, export, return, validation');
+await browser.close();
+})();

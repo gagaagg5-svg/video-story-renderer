@@ -423,9 +423,35 @@
     </div>
     <label class="tile" style="margin:10px auto;max-width:260px"><input type="checkbox" name="prov" value="manual"><span class="dot"></span>
       <svg viewBox="0 0 64 64"><rect x="7" y="13" width="50" height="38" rx="2"/><path d="M10 43l14-15 10 10 8-8 15 14M42 25h1"/></svg><span class="t" id="manual_tile">Свои изображения</span></label>
+    <button class="ghost" onclick="openLoop()" style="margin:8px auto" data-i18n="loop_title"></button>
     <div class="hint" id="hint1"></div>
     <div class="store" id="store"></div>
     <div class="nav"><span></span><button class="primary" onclick="go(2)" data-i18n="next"></button></div>
+  </div>
+
+  <div class="screen" id="screen7">
+    <div class="topbar"><div class="logo">Kadro · Gen</div><div class="stepname" data-i18n="loop_title"></div></div>
+    <div class="alist" style="padding:24px;overflow:auto">
+      <p data-i18n="loop_hint"></p>
+      <button onclick="pickLoopVideo()" data-i18n="loop_pick"></button>
+      <p id="loop_path" style="overflow-wrap:anywhere;user-select:text"></p>
+      <div style="display:flex;gap:16px;flex-wrap:wrap;margin:22px 0">
+        <label><span data-i18n="loop_hours"></span><input id="loop_hours" aria-label="Hours" type="number" min="0" max="24" step="1" value="2" style="width:90px"></label>
+        <label><span data-i18n="loop_minutes"></span><input id="loop_minutes" aria-label="Minutes" type="number" min="0" max="59" step="1" value="0" style="width:90px"></label>
+        <label><span data-i18n="loop_seconds"></span><input id="loop_seconds" aria-label="Seconds" type="number" min="0" max="59" step="1" value="0" style="width:90px"></label>
+      </div>
+      <label style="display:flex;gap:12px;align-items:center"><input id="loop_audio" type="checkbox" style="width:20px"><span data-i18n="loop_audio"></span></label>
+      <h3 style="margin-top:24px" data-i18n="render_music_title"></h3>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin:12px 0">
+        <button onclick="pickRenderMusic()" data-i18n="render_music_add"></button>
+        <button class="ghost" onclick="renderMusicTracks=[];renderMusicList()" data-i18n="render_music_clear"></button>
+      </div>
+      <div id="loop_music_list" style="display:grid;gap:8px"></div>
+      <label style="display:flex;gap:16px;margin:18px 0;align-items:center"><span data-i18n="render_music_volume"></span><input id="loop_volume" type="range" min="0" max="100" value="15" oninput="setLoopVolume(this.value)"><span id="loop_volume_value">15%</span></label>
+      <p class="note" style="white-space:normal" data-i18n="loop_music_hint"></p>
+      <div class="status err" id="loop_error" role="alert"></div>
+    </div>
+    <div class="nav"><button class="ghost" onclick="go(1)" data-i18n="back"></button><button class="primary" id="loop_start" onclick="startLoopVideo()" data-i18n="begin"></button></div>
   </div>
 
   <div class="screen" id="screen2">
@@ -508,7 +534,7 @@
         <div class="bar"><i id="stage_bar"></i></div>
         <div class="time" id="p_time"></div><div id="p_err"></div>
         <div class="wait" id="p_wait"><div class="wr"><svg viewBox="0 0 24 24"><path d="M6 2h12M6 22h12M7 2v4l5 6 5-6V2M7 22v-4l5-6 5 6v4"/></svg><span class="wt" id="w_title"></span><span class="cd" id="w_cd"></span></div><small id="w_sub"></small></div>
-        <div style="margin-top:auto; padding-top:16px; display:flex; gap:8px; flex-wrap:wrap"><button id="btn_cancel" class="danger" onclick="cancelJob()" data-i18n="stop"></button><button id="btn_again" class="ghost" onclick="go(4)" disabled data-i18n="again"></button><button id="btn_report" class="ghost" onclick="sendReport()" data-i18n="report"></button></div>
+        <div style="margin-top:auto; padding-top:16px; display:flex; gap:8px; flex-wrap:wrap"><button id="btn_cancel" class="danger" onclick="cancelJob()" data-i18n="stop"></button><button id="btn_again" class="ghost" onclick="loopJob ? openLoop() : go(4)" disabled data-i18n="again"></button><button id="btn_report" class="ghost" onclick="sendReport()" data-i18n="report"></button></div>
       </div>
       <div class="panel"><h3 id="g_title"></h3><div class="frames" id="frames"></div>
         <div id="result" class="result"><b data-i18n="done"></b><div class="path" id="r_path"></div><button class="primary" onclick="pywebview.api.open_result()" data-i18n="open"></button> <button class="ghost" onclick="pywebview.api.open_output()" data-i18n="folder"></button>
@@ -591,6 +617,27 @@ Object.assign(I18N.en, {copy_speed_label:'Second version speed',copy_speed_butto
 Object.assign(I18N.ru, {render_music_title:'Музыка в видео',render_music_add:'Добавить треки',render_music_clear:'Убрать музыку',render_music_volume:'Громкость музыки',render_music_hint:'Треки играют по порядку: 1 → 2 → 3 → 4 → снова 1, до конца ролика. Стрелками можно менять порядок. 0% — без музыки. Начните с 10–20%: озвучка остаётся на своей громкости.'});
 Object.assign(I18N.en, {render_music_title:'Music in the video',render_music_add:'Add tracks',render_music_clear:'Remove music',render_music_volume:'Music volume',render_music_hint:'Tracks play in order and repeat until the video ends. Use arrows to reorder. 0% turns music off. Start at 10–20%; narration keeps its own volume.'});
 I18N.ru.stages.music = 'Музыка'; I18N.en.stages.music = 'Music';
+Object.assign(I18N.ru, {loop_title:'Зациклить видео',loop_pick:'Выбрать видео',loop_hours:'Часы ',loop_minutes:'Минуты ',loop_seconds:'Секунды ',loop_audio:'Оставить звук исходного видео',loop_hint:'Один ролик повторяется подряд без переходов до заданной длительности (до 24 часов). Последний повтор обрезается по границе кадра. Сохраняется исходное разрешение. Для совместимых MP4 видеодорожка копируется без потери качества.',loop_music_hint:'Музыка необязательна. Треки играют по порядку и повторяются до конца. Громкость регулируется здесь; звук исходного видео можно отключить выше.'});
+Object.assign(I18N.en, {loop_title:'Loop a video',loop_pick:'Choose video',loop_hours:'Hours ',loop_minutes:'Minutes ',loop_seconds:'Seconds ',loop_audio:'Keep original video audio',loop_hint:'Repeat one clip with straight cuts up to the selected duration (up to 24 hours). The last repeat ends at a frame boundary. Source resolution is preserved. Compatible MP4 video is copied without quality loss.',loop_music_hint:'Music is optional. Tracks play in order and repeat until the video ends. Adjust music volume here; original clip audio can be disabled above.'});
+let loopSource = '', loopJob = false;
+function openLoop() { renderMusicList(); setLoopVolume(renderMusicVolume); go(7); }
+function setLoopVolume(value) { renderMusicVolume=+value; $('loop_volume').value=value; $('loop_volume_value').textContent=value+'%'; $('render_music_volume').value=value; $('render_music_value').textContent=value+'%'; }
+async function pickLoopVideo() { const path=await pywebview.api.pick_intro_video(); if(path){loopSource=path;$('loop_path').textContent=path;} }
+async function startLoopVideo() {
+  const h=Number($('loop_hours').value), m=Number($('loop_minutes').value), sec=Number($('loop_seconds').value);
+  if (![h,m,sec].every(Number.isInteger) || h<0 || h>24 || m<0 || m>59 || sec<0 || sec>59) { $('loop_error').textContent=L==='ru'?'Проверьте часы, минуты и секунды.':'Check hours, minutes and seconds.';return; }
+  $('loop_start').disabled=true; $('loop_error').textContent='';
+  try {
+    const r=await pywebview.api.start_loop({source:loopSource,seconds:h*3600+m*60+sec,keep_audio:$('loop_audio').checked,music:{tracks:renderMusicTracks.slice(),volume:renderMusicVolume}});
+    if(!r.ok){$('loop_error').textContent=r.error;return;}
+    loopJob=true;queueMode=false;
+    $('result').classList.remove('show');$('error').textContent='';$('btn_again').disabled=true;$('btn_cancel').disabled=false;shownPct=0;
+    $('g_title').textContent=t('loop_title');
+    $('stages').innerHTML=['render',...(renderMusicTracks.length && renderMusicVolume>0?['music']:[]),'done'].map(k=>`<li id="sg_${k}">${t('stages')[k]}</li>`).join('');
+    buildFrames(0);go(6);poll();
+  } catch(e) { $('loop_error').textContent=String(e); }
+  finally { $('loop_start').disabled=false; }
+}
 let renderMusicTracks = [], renderMusicVolume = 15;
 async function pickRenderMusic() {
   const added = await pywebview.api.pick_music_tracks();
@@ -605,7 +652,8 @@ function moveRenderMusic(i, direction) {
 }
 function removeRenderMusic(i) { renderMusicTracks.splice(i,1); renderMusicList(); }
 function renderMusicList() {
-  $('render_music_list').innerHTML = renderMusicTracks.map((path,i) => `<div style="display:flex;gap:8px;align-items:center"><span style="flex:1;overflow-wrap:anywhere">${i+1}. ${esc(path.split(/[\\/]/).pop())}</span><button class="ghost" onclick="moveRenderMusic(${i},-1)"${i===0?' disabled':''} aria-label="Move up">↑</button><button class="ghost" onclick="moveRenderMusic(${i},1)"${i===renderMusicTracks.length-1?' disabled':''} aria-label="Move down">↓</button><button class="ghost" onclick="removeRenderMusic(${i})" aria-label="Remove">×</button></div>`).join('');
+  const html = renderMusicTracks.map((path,i) => `<div style="display:flex;gap:8px;align-items:center"><span style="flex:1;overflow-wrap:anywhere">${i+1}. ${esc(path.split(/[\\/]/).pop())}</span><button class="ghost" onclick="moveRenderMusic(${i},-1)"${i===0?' disabled':''} aria-label="Move up">↑</button><button class="ghost" onclick="moveRenderMusic(${i},1)"${i===renderMusicTracks.length-1?' disabled':''} aria-label="Move down">↓</button><button class="ghost" onclick="removeRenderMusic(${i})" aria-label="Remove">×</button></div>`).join('');
+  $('render_music_list').innerHTML=html; $('loop_music_list').innerHTML=html;
 }
 let L = 'ru';
 const t = k => I18N[L][k];
@@ -652,7 +700,7 @@ function go(n) {
   const from = $('screen' + cur); from.classList.add('leaving');
   setTimeout(() => {
     from.classList.remove('leaving', 'active'); cur = n;
-    for (let i = 1; i <= 6; i++) $('screen' + i).classList.toggle('active', i === n);
+    for (let i = 1; i <= 7; i++) $('screen' + i).classList.toggle('active', i === n);
     if (n === 4) renderAccess();
   }, 240);
 }
@@ -954,6 +1002,7 @@ async function pollUpdate() {
   updTimer = setTimeout(pollUpdate, 500);
 }
 async function startFromReview() {
+  loopJob=false;
   const o = opts();
   if (queueMode) {
     const r = await pywebview.api.queue_start(o);
@@ -984,6 +1033,7 @@ async function redoScene(i) {
 }
 function buildFrames(n) { total = n; known = new Set(); const f = $('frames'); f.innerHTML = ''; for (let i = 0; i < n; i++) { const d = document.createElement('div'); d.className = 'frame pending'; d.id = 'fr' + i; d.dataset.n = String(i + 1).padStart(2, '0'); d.innerHTML = '<span class="ph"></span>'; f.appendChild(d); } }
 async function start(o) {
+  loopJob=false;
   const r = await pywebview.api.start(o || opts());
   if (!r.ok) { $('s_prep2').textContent = r.error; return; }
   $('result').classList.remove('show'); $('error').textContent = ''; $('btn_again').disabled = true; $('btn_cancel').disabled = false; $('g_title').textContent = t('frames'); shownPct = 0;
@@ -1021,7 +1071,7 @@ async function poll() {
   } else $('p_queue').textContent = '';
   const idx = ORDER[st.stage] ?? 0;
   document.querySelectorAll('.stages li').forEach(li => { const o = ORDER[li.id.slice(3)] ?? 0; li.classList.toggle('done', o < idx || !!st.result); li.classList.toggle('cur', o === idx && !st.result && st.running); });
-  const pct = st.result ? 100 : Math.min(99, Math.round((idx / 8) * 100 * 0.85 + (st.total ? (st.done / st.total) * 12 : 0)));
+  const pct = loopJob ? (st.result ? 100 : st.stage==='music' ? 95 : Math.min(94,Math.round((st.done/Math.max(1,st.total))*94))) : st.result ? 100 : Math.min(99, Math.round((idx / 8) * 100 * 0.85 + (st.total ? (st.done / st.total) * 12 : 0)));
   animatePct(pct); $('ring').style.strokeDashoffset = 502 - 502 * pct / 100; $('ring_glow').style.display = st.running ? '' : 'none';
   $('stage_bar').style.width = (st.total ? Math.round(100 * st.done / st.total) : (st.running ? 15 : 100)) + '%';
   $('p_stage').textContent = (t('stages')[st.stage] || st.stage_name || '').toUpperCase();
@@ -1385,6 +1435,7 @@ window.addEventListener('pywebviewready', () => loadConfig(false));
 </script>
 </body>
 </html>
+
 
 
 
