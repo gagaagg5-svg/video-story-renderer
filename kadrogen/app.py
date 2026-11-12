@@ -44,7 +44,7 @@ import pipeline
 import narration_tracks
 import manual_images
 
-VERSION = "1.7.4-multi-narration"
+VERSION = "1.7.5-media-probe-fix"
 # Публичная папка Google Диска с архивами VideoGen-x.y.z.zip. Программа при запуске смотрит список файлов
 # и предлагает скачать самую свежую версию. Пусто — проверка выключена.
 UPDATE_FOLDER_ID = ""  # An official update must not overwrite this customized build.
@@ -1882,6 +1882,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 

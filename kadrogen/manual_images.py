@@ -3,6 +3,7 @@
 This path never calls an image generator. It deliberately keeps its job cache
 separate from Kadro.Gen's scene-generation jobs.
 """
+import json
 import hashlib
 import base64
 import csv
@@ -245,15 +246,16 @@ def intro_duration(path):
         result = pipeline.audio_duration(path)
         video = pipeline.subprocess.run(
             [pipeline.ffmpeg_bin("ffprobe"), "-v", "error", "-select_streams", "v:0",
-             "-show_entries", "stream=codec_type", "-of", "csv=p=0", path],
+             "-show_entries", "stream=index,codec_type", "-of", "json", path],
             capture_output=True, text=True, check=True, creationflags=pipeline.NO_WINDOW,
-            timeout=15).stdout.strip()
-    except (OSError, ValueError, RuntimeError, pipeline.subprocess.CalledProcessError) as exc:
+            timeout=15).stdout
+        streams = json.loads(video).get("streams", [])
+    except (OSError, ValueError, RuntimeError, pipeline.subprocess.SubprocessError) as exc:
         raise ValueError(f"Не удалось прочитать вступительное видео: {exc}") from exc
     if not math.isfinite(result) or result < 0.3:
         raise ValueError("Вступительное видео должно длиться не менее 0,3 секунды.")
-    if video != "video":
-        raise ValueError("Во вступительном файле не найдена видеодорожка.")
+    if not any(stream.get("codec_type") == "video" for stream in streams):
+        raise ValueError(f"В файле {os.path.basename(path)} не найдена видеодорожка. Проверьте выбранный файл в поле «Видео в начале».")
     return result
 
 
@@ -574,6 +576,7 @@ def make_video(audio, folder, motion=False, subtitles=False, progress_cb=None, t
     pipeline.cleanup_job(work_dir)
     progress("done", 1, 1, f"готово: {result}")
     return result
+
 
 
 

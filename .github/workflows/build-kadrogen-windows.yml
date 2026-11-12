@@ -67,6 +67,8 @@ jobs:
         run: python tests/test_manual_images.py
       - name: Download FFmpeg
         run: python packaging/download_ffmpeg.py
+      - name: Test media detection with metadata and Cyrillic paths
+        run: python tests/test_media_probe.py
       - name: Test multiple narration files and timed silence gaps
         run: python tests/test_narration_tracks.py
       - name: Test timed animation insertion and muted source audio
@@ -112,6 +114,7 @@ jobs:
           path: kadrogen/KadroGen-Windows-Images-Timing.zip
           retention-days: 14
           if-no-files-found: error
+
 
 
 

@@ -66,9 +66,10 @@ def plan(options):
         try:
             duration = pipeline.audio_duration(path)
             probe = subprocess.run([pipeline.ffmpeg_bin('ffprobe'), '-v', 'error', '-select_streams', 'a:0',
-                '-show_entries', 'stream=codec_type', '-of', 'csv=p=0', path],
+                '-show_entries', 'stream=index,codec_type', '-of', 'json', path],
                 capture_output=True, text=True, check=True, timeout=30, creationflags=pipeline.NO_WINDOW)
-            if probe.stdout.strip() != 'audio' or not math.isfinite(duration) or duration <= 0:
+            streams = json.loads(probe.stdout).get('streams', [])
+            if not any(s.get('codec_type') == 'audio' for s in streams) or not math.isfinite(duration) or duration <= 0:
                 raise ValueError()
         except (OSError, ValueError, subprocess.SubprocessError):
             raise ValueError(f'Не удалось прочитать озвучку: {os.path.basename(path)}') from None
@@ -132,3 +133,4 @@ def prepare(arrangement, progress):
         pipeline.check_cancel()
         os.replace(output,target)
     return str(target)
+
