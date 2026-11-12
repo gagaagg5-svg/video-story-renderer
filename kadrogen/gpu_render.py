@@ -107,7 +107,7 @@ def frame_plan(scenes, fps, motion):
     lengths = [b - a for a, b in zip(boundaries, boundaries[1:])]
     overlaps = [0]
     for i in range(1, len(scenes)):
-        overlaps.append(min(round(0.5 * fps), lengths[i - 1] // 2, lengths[i] // 2) if motion else 0)
+        overlaps.append(min(round(0.5 * fps), lengths[i - 1] // 2, lengths[i] // 2) if motion and not scenes[i-1].get("animation") and not scenes[i].get("animation") else 0)
     return boundaries, overlaps
 
 
@@ -378,15 +378,6 @@ def render(scenes, img_dir, videos, audio, work_dir, output, progress,
                  "-vf", vf, "-frames:v", str(total), "-an", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"],
                 stdout=subprocess.PIPE, stderr=overlay_log, creationflags=pipeline.NO_WINDOW)
             progress("render", 0, total, f"футаж: {os.path.basename(overlay['path'])} · {overlay['opacity']:.0%} · {overlay['speed']:g}× · один проход")
-        if videos:
-            if set(videos) != {scenes[0]["index"]}:
-                raise ValueError("GPU-путь поддерживает видео только в начале.")
-            vf = (f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},"
-                  f"setsar=1,fps={fps},tpad=stop_mode=clone:stop_duration={boundaries[1] / fps + 1}")
-            decoder = subprocess.Popen(
-                [pipeline.ffmpeg_bin(), "-v", "error", "-i", videos[scenes[0]["index"]],
-                 "-vf", vf, "-frames:v", str(boundaries[1]), "-an", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"],
-                stdout=subprocess.PIPE, stderr=decoder_log, creationflags=pipeline.NO_WINDOW)
 
         def cancel_pipes():
             while not stopped.wait(0.1):
@@ -410,10 +401,17 @@ def render(scenes, img_dir, videos, audio, work_dir, output, progress,
             prepared_at = time.perf_counter()
             composer.keep({key, next_key})
             next_texture = (composer.image(next_key, os.path.join(img_dir, f"{next_key:04d}.png"))
-                            if i + 1 < len(scenes) else None)
+                            if i + 1 < len(scenes) and next_key not in videos else None)
             texture = None if key in videos else composer.image(key, os.path.join(img_dir, f"{key:04d}.png"))
             timings["image_upload_seconds"] += time.perf_counter() - prepared_at
             length = boundaries[i + 1] - boundaries[i]
+            if key in videos:
+                vf = (f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},"
+                      f"setsar=1,setpts=PTS-STARTPTS,fps={fps},tpad=stop_mode=clone:stop_duration={length / fps + 1}")
+                decoder = subprocess.Popen(
+                    [pipeline.ffmpeg_bin(), "-v", "error", "-i", videos[key],
+                     "-vf", vf, "-frames:v", str(length), "-an", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"],
+                    stdout=subprocess.PIPE, stderr=decoder_log, creationflags=pipeline.NO_WINDOW)
             incoming = overlaps[i]
             outgoing = overlaps[i + 1] if i + 1 < len(scenes) else 0
             for local in range(length):
@@ -421,7 +419,7 @@ def render(scenes, img_dir, videos, audio, work_dir, output, progress,
                 if key in videos:
                     pixels = decoder.stdout.read(width * height * 3)
                     if len(pixels) != width * height * 3:
-                        raise RuntimeError("Не удалось прочитать вступительное видео.")
+                        raise RuntimeError("Не удалось прочитать видеоклип.")
                     texture = composer.video(key, pixels)
                 transition_frame = local - (length - outgoing)
                 fraction = transition_frame / outgoing if outgoing and transition_frame >= 0 else 0.0
@@ -456,7 +454,7 @@ def render(scenes, img_dir, videos, audio, work_dir, output, progress,
             if key in videos:
                 decoder.stdout.close()
                 if decoder.wait(timeout=30) != 0:
-                    raise RuntimeError("Ошибка чтения вступительного видео.")
+                    raise RuntimeError("Ошибка чтения видеоклипа.")
         finish_at = time.perf_counter()
         encoder.stdin.close()
         if overlay_decoder:
@@ -511,4 +509,5 @@ def render(scenes, img_dir, videos, audio, work_dir, output, progress,
         composer.close()
         if os.path.exists(tmp):
             os.remove(tmp)
+
 

@@ -662,9 +662,9 @@ const t = k => I18N[L][k];
 const TTS_PH = {voicegen:'VoiceGen key (Telegram bot)', voicer:'Voicer token', lumean:'Lumean key'};
 let audioPath = "", manualFolder = "", manualCount = 0, timingPath = "", introVideo = "", manualNames = [], focusPoints = {}, zoomSeconds = 18, filmEffect = 'none', filmIntensity = 50, overlayPath = '', overlayOpacity = 30, overlaySpeed = 0.5, overlayCache = true, manualPreview = false, focusIndex = 0, cur = 1, known = new Set(), total = 0, scanTimer = null, source = 'mp3';
 const MANUAL_LABELS = {
-  ru:{tile:'Свои изображения',folder:'Папка с кадрами',pick:'Выбрать папку',timing:'Тайминг (необязательно)',timingPick:'Выбрать CSV / XML',timingClear:'Убрать',timingNone:'Поровну по оставшейся длине MP3',intro:'Видео в начале',introPick:'Выбрать видео',introNone:'Без вступительного видео',focus:'Точка приближения',focusTip:'Выберите кадр и нажмите на объект, который должен оставаться в фокусе. Вступление идёт с начала MP3; его исходный звук отключается.',zoomSpeed:'Время приближения',zoomHint:'Для длинного кадра приближение плавно сменится отдалением и повторится.',film:'Плёночные частицы',filmNone:'Без эффекта',filmLight:'Лёгкая плёнка · медленная пыль',filmRetro:'Старая плёнка · мягкие следы',filmHint:'Полупрозрачная пыль и тонкие следы плавно движутся. Без сплошного шума. При GPU-рендере накладываются за один проход.',empty:'Выберите папку с PNG, JPG или WEBP. Можно добавить вступительное видео. В CSV первой строкой укажите видео, затем изображения: длительности считаются с 00:00. XML DaVinci может содержать видео и изображения на одной дорожке. Без тайминга используется длина видео, остаток MP3 распределяется поровну.',
+  ru:{tile:'Свои изображения',folder:'Папка с кадрами',pick:'Выбрать папку',timing:'Тайминг (необязательно)',timingPick:'Выбрать CSV / XML',timingClear:'Убрать',timingNone:'Поровну по оставшейся длине MP3',intro:'Видео в начале',introPick:'Выбрать видео',introNone:'Без вступительного видео',focus:'Точка приближения',focusTip:'Выберите кадр и нажмите на объект, который должен оставаться в фокусе. Вступление идёт с начала MP3; его исходный звук отключается.',zoomSpeed:'Время приближения',zoomHint:'Для длинного кадра приближение плавно сменится отдалением и повторится.',film:'Плёночные частицы',filmNone:'Без эффекта',filmLight:'Лёгкая плёнка · медленная пыль',filmRetro:'Старая плёнка · мягкие следы',filmHint:'Полупрозрачная пыль и тонкие следы плавно движутся. Без сплошного шума. При GPU-рендере накладываются за один проход.',empty:'Анимации MP4/MOV/MKV/WEBM/GIF можно положить в папку вместе с изображениями и указать в CSV/XML. Они играют один раз, без звука, зума и сдвигов. Тайминг обязателен для анимаций. Выберите папку с PNG, JPG или WEBP. Можно добавить вступительное видео. В CSV первой строкой укажите видео, затем изображения: длительности считаются с 00:00. XML DaVinci может содержать видео и изображения на одной дорожке. Без тайминга используется длина видео, остаток MP3 распределяется поровну.',
       count:'кадров',service:'Свои изображения · без генерации', key:'Ключ OpenAI для субтитров (не нужен без субтитров)', queue:'Очередь не применяется к режиму своих изображений.'},
-  en:{tile:'My images',folder:'Image folder',pick:'Choose folder',timing:'Timing (optional)',timingPick:'Choose CSV / XML',timingClear:'Remove',timingNone:'Evenly across the rest of the MP3',intro:'Opening video',introPick:'Choose video',introNone:'No opening video',focus:'Zoom focus',focusTip:'Choose an image and click the subject to keep it in focus. The intro starts with the MP3; its source audio is muted.',zoomSpeed:'Zoom time',zoomHint:'Long images gently zoom back out and repeat.',film:'Film particles',filmNone:'None',filmLight:'Light film · slow dust',filmRetro:'Old film · dust and scratches',filmHint:'Slow translucent dust. Composited in one pass when GPU effects are available.',empty:'Choose PNG, JPG or WEBP images and optional opening video. For CSV, list the video first and then images: durations start at 00:00. A DaVinci XML may include the video and images on one track. Without timing, the source video plays in full and images share the rest of the MP3.',
+  en:{tile:'My images',folder:'Image folder',pick:'Choose folder',timing:'Timing (optional)',timingPick:'Choose CSV / XML',timingClear:'Remove',timingNone:'Evenly across the rest of the MP3',intro:'Opening video',introPick:'Choose video',introNone:'No opening video',focus:'Zoom focus',focusTip:'Choose an image and click the subject to keep it in focus. The intro starts with the MP3; its source audio is muted.',zoomSpeed:'Zoom time',zoomHint:'Long images gently zoom back out and repeat.',film:'Film particles',filmNone:'None',filmLight:'Light film · slow dust',filmRetro:'Old film · dust and scratches',filmHint:'Slow translucent dust. Composited in one pass when GPU effects are available.',empty:'Animations MP4/MOV/MKV/WEBM/GIF may share the image folder. List them in CSV/XML: one play, muted, no zoom or slide. Timing is required for animations. Choose PNG, JPG or WEBP images and optional opening video. For CSV, list the video first and then images: durations start at 00:00. A DaVinci XML may include the video and images on one track. Without timing, the source video plays in full and images share the rest of the MP3.',
       count:'images',service:'My images · no generation',key:'OpenAI key for subtitles (not needed without subtitles)',queue:'Queue is unavailable for my images.'}
 };
 Object.assign(MANUAL_LABELS.ru, {filmIntensity:'Заметность плёнки',filmIntensityHint:'0% — выключена, 50% — мягкая плёнка, 100% — заметнее. Скорость движения остаётся медленной.',preview:'Пробный экспорт',previewOn:'Проба всех кадров · до 3 с каждый',previewOff:'Полный ролик',previewHint:'Все выбранные кадры и переходы, но каждый кадр не длиннее 3 секунд. Используется начало MP3. В пробе субтитры пропускаются.',fullLength:'Длина готового ролика',renderUnknown:'время экспорта зависит от компьютера',sec:'с',gpuCheck:'Проверить кодирование',gpuReady:'NVIDIA NVENC доступен',gpuFailed:'NVENC недоступен; будет работать процессор'});
@@ -803,12 +803,13 @@ async function loadFocusPreview() {
 function showFocusDot() {
   const dot = $('focus_dot'), name = manualNames[focusIndex];
   if (!dot || !name) return;
+  dot.style.display = /\.(mp4|mov|mkv|webm|gif)$/i.test(name) ? 'none' : '';
   const point = focusPoints[name] || [0.5, 0.5];
   dot.style.left = (point[0] * 100) + '%'; dot.style.top = (point[1] * 100) + '%';
 }
 function chooseFocus(event) {
   const rect = event.currentTarget.getBoundingClientRect(), name = manualNames[focusIndex];
-  if (!name) return;
+  if (!name || /\.(mp4|mov|mkv|webm|gif)$/i.test(name)) return;
   focusPoints[name] = [Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)),
                        Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height))];
   showFocusDot();
@@ -1160,7 +1161,7 @@ function renderAccess() {
   const p = provs(), fg = p.includes('fastgen'), H = [];
   if (manualMode()) {
     H.push(row(t('file_lbl'), '', `<input type="text" id="file_name" readonly value="${esc(audioPath)}" placeholder="${esc(t('drop_hint'))}"><button onclick="pick()">${t('pick')}</button>`));
-    H.push(row(mt('folder'), '', `<input type="text" readonly value="${esc(manualFolder)}" placeholder="PNG / JPG / WEBP"><button onclick="pickImagesFolder()">${mt('pick')}</button><span class="note">${manualCount} ${mt('count')}</span>`));
+    H.push(row(mt('folder'), '', `<input type="text" readonly value="${esc(manualFolder)}" placeholder="PNG / JPG / WEBP / MP4 / GIF"><button onclick="pickImagesFolder()">${mt('pick')}</button><span class="note">${manualCount} ${mt('count')}</span>`));
     H.push(row(mt('intro'), '', `<input type="text" readonly value="${esc(introVideo)}" placeholder="${mt('introNone')}"><button onclick="pickIntroVideo()">${mt('introPick')}</button>${introVideo ? `<button class="ghost" onclick="clearIntroVideo()">${mt('timingClear')}</button>` : ''}`));
     H.push(row(mt('timing'), '', `<input type="text" readonly value="${esc(timingPath)}" placeholder="${mt('timingNone')}"><button onclick="pickTimingFile()">${mt('timingPick')}</button>${timingPath ? `<button class="ghost" onclick="clearTimingFile()">${mt('timingClear')}</button>` : ''}`));
     if (manualNames.length) H.push(row(mt('focus'), '', `<select class="sel" id="focus_frame">${manualNames.map((name, i) => `<option value="${i}"${i === focusIndex ? ' selected' : ''}>${esc(name)}</option>`).join('')}</select>`));
@@ -1437,6 +1438,7 @@ window.addEventListener('pywebviewready', () => loadConfig(false));
 </script>
 </body>
 </html>
+
 
 
 

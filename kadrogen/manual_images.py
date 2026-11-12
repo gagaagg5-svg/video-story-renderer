@@ -22,7 +22,7 @@ import pipeline
 
 
 EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
-VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm"}
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".gif"}
 
 
 def _read_csv_timing(file_path):
@@ -98,6 +98,8 @@ def _read_xml_timing(file_path, include_video=False):
                 end = int(clip.findtext("end"))
             except (TypeError, ValueError):
                 raise ValueError("В XML кадру не заданы start и end на таймлайне.") from None
+            if os.path.splitext(name)[1].lower() in VIDEO_EXTENSIONS and int(clip.findtext("in") or 0) != 0:
+                raise ValueError("XML: анимация должна начинаться с первого кадра файла (in=0).")
             clips.append((name, start, end))
         if clips:
             tracks.append(clips)
@@ -125,7 +127,7 @@ def resolve_timing(paths, timing_file, audio_duration, intro_duration=0.0, items
         except ValueError:
             raise ValueError("CSV: длительности должны быть числами в секундах, например 3.5.") from None
     elif ext == ".xml":
-        tracks, fps = _read_xml_timing(timing_file)
+        tracks, fps = _read_xml_timing(timing_file, include_video=True)
         names = {os.path.basename(p).casefold() for p in paths}
         candidates = [t for t in tracks if len(t) == len(paths) and
                       {os.path.basename(x[0]).casefold() for x in t} == names]
@@ -168,6 +170,9 @@ def resolve_timing(paths, timing_file, audio_duration, intro_duration=0.0, items
 
 def resolve_full_timing(paths, timing_file, audio_duration, intro_video=None):
     """Interpret the first video as part of the same 00:00-based timeline."""
+    animations = [p for p in paths if os.path.splitext(p)[1].lower() in VIDEO_EXTENSIONS]
+    if animations and not timing_file:
+        raise ValueError("Для папки с анимациями выберите CSV или XML с длительностью каждого кадра.")
     original_intro = intro_duration(intro_video)
     if not timing_file:
         if audio_duration - original_intro < len(paths) * 0.3:
@@ -222,6 +227,11 @@ def resolve_full_timing(paths, timing_file, audio_duration, intro_video=None):
         raise ValueError("Вступление оставляет слишком мало времени для кадров и озвучки.")
     images, durations = resolve_timing(paths, timing_file, audio_duration - intro_length,
                                        intro_length, items_override=items)
+    for path, length in zip(images, durations):
+        if path in animations:
+            actual = intro_duration(path)
+            if length > actual + max(0.15, 1 / pipeline.FPS):
+                raise ValueError(f"Анимация {os.path.basename(path)}: в тайминге {length:.2f} с, в файле {actual:.2f} с. Укажите длительность не больше длины анимации.")
     return images, durations, intro_length
 
 
@@ -251,6 +261,11 @@ def image_preview(folder, index):
     paths = list_images(folder)
     if not isinstance(index, int) or not 0 <= index < len(paths):
         raise ValueError("Кадр не найден.")
+    if os.path.splitext(paths[index])[1].lower() in VIDEO_EXTENSIONS:
+        data = pipeline.subprocess.run([pipeline.ffmpeg_bin(), "-v", "error", "-i", paths[index],
+            "-frames:v", "1", "-vf", "scale=640:-2", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"],
+            capture_output=True, check=True, timeout=30, creationflags=pipeline.NO_WINDOW).stdout
+        return {"name": os.path.basename(paths[index]), "src": "data:image/jpeg;base64," + base64.b64encode(data).decode("ascii"), "animation": True}
     with Image.open(paths[index]) as original:
         image = pipeline._fit_16_9(ImageOps.exif_transpose(original).convert("RGB"))
         image.thumbnail((640, 360))
@@ -374,10 +389,10 @@ def list_images(folder):
         raise ValueError("Папка с изображениями не найдена. Выберите её снова.")
     paths = [os.path.join(folder, name) for name in os.listdir(folder)
              if os.path.isfile(os.path.join(folder, name))
-             and os.path.splitext(name)[1].lower() in EXTENSIONS]
+             and os.path.splitext(name)[1].lower() in EXTENSIONS | VIDEO_EXTENSIONS]
     paths.sort(key=_natural_key)
     if not paths:
-        raise ValueError("В папке нет изображений PNG, JPG или WEBP.")
+        raise ValueError("В папке нет изображений PNG/JPG/WEBP или анимаций MP4/MOV/MKV/WEBM/GIF.")
     return paths
 
 
@@ -408,6 +423,10 @@ def _import_images(paths, work_dir, progress, offset=0):
     for i, path in enumerate(paths):
         pipeline.check_cancel()
         dest = os.path.join(image_dir, f"{i + offset:04d}.png")
+        if os.path.splitext(path)[1].lower() in VIDEO_EXTENSIONS:
+            pipeline.run_ffmpeg(["-i", path, "-frames:v", "1", dest])
+            progress("images", i + 1, len(paths), f"анимация: {os.path.basename(path)}")
+            continue
         tmp = dest + ".part"
         try:
             with Image.open(path) as original:
@@ -479,6 +498,9 @@ def make_video(audio, folder, motion=False, subtitles=False, progress_cb=None, t
         points[name] = [x, y]
         scenes.append({"index": i + offset, "start": position, "duration": length,
                        "focus": (x, y), "zoom_seconds": zoom_seconds, "zoom": bool(motion)})
+        if os.path.splitext(paths[i])[1].lower() in VIDEO_EXTENSIONS:
+            videos[i + offset] = paths[i]
+            scenes[-1].update(zoom=False, animation=True)
         position += length
     timeline_manifest = os.path.join(work_dir, "manual_timing.json")
     intro_stamp = ({"path": os.path.abspath(intro_video), "size": os.stat(intro_video).st_size,
@@ -488,7 +510,7 @@ def make_video(audio, folder, motion=False, subtitles=False, progress_cb=None, t
     render_state = {"durations": durations, "intro": intro_stamp, "intro_length": intro_length,
                     "preview": bool(preview), "focus": points,
                     "zoom_seconds": zoom_seconds, "motion": bool(motion),
-                    "renderer": "opengl-single-pass-v1", "film_effect": film_effect,
+                    "renderer": "opengl-mixed-animation-v2", "film_effect": film_effect,
                     "film_intensity": film_intensity,
                     "overlay": overlay_stamp,
                     "transitions": "zoom-slide-v1"}
@@ -552,6 +574,7 @@ def make_video(audio, folder, motion=False, subtitles=False, progress_cb=None, t
     pipeline.cleanup_job(work_dir)
     progress("done", 1, 1, f"готово: {result}")
     return result
+
 
 
 

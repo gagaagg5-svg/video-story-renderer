@@ -64,6 +64,8 @@ jobs:
         run: python tests/test_manual_images.py
       - name: Download FFmpeg
         run: python packaging/download_ffmpeg.py
+      - name: Test timed animation insertion and muted source audio
+        run: python tests/test_timed_animation.py
       - name: Test zoom, slides, and encoder fallback
         run: python tests/test_native_render.py
       - name: Test accelerated copies and preserved audio pitch
@@ -104,6 +106,7 @@ jobs:
           path: kadrogen/KadroGen-Windows-Images-Timing.zip
           retention-days: 14
           if-no-files-found: error
+
 
 
 

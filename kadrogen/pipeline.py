@@ -2269,6 +2269,9 @@ TRANSITIONS = ["zoomin", "slideleft", "slideright", "slideup", "slidedown"]
 
 
 def assemble_video(scenes, img_dir, videos, audio_path, job_dir, out_mp4, progress, motion=False):
+    if any(s.get("animation") for s in scenes):
+        # Keep exact cut boundaries in the CPU fallback; still-image zoom remains enabled.
+        motion = False
     clips_dir = os.path.join(job_dir, "clips" + ("_m" if motion else ""))
     os.makedirs(clips_dir, exist_ok=True)
     n = len(scenes)
@@ -2962,5 +2965,6 @@ if __name__ == "__main__":
     make_video(sys.argv[1], provider=arg("--provider"), mode=arg("--mode", "images"), style_key=arg("--style"),
                use_refs="--refs" in sys.argv, subtitles="--subs" in sys.argv, motion="--motion" in sys.argv,
                fastgen_quality=arg("--quality"))
+
 
 

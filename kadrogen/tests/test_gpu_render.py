@@ -202,6 +202,28 @@ def run():
         finally:
             fake.CANCEL.clear()
         assert protected.read_bytes() == b"previous completed export"
+        # Animation in the middle and consecutive animations: no missing still
+        # texture, no transition, no zoom, and no replay of the first frame.
+        anim = root / "timed_animation.mp4"
+        ff(["-f", "lavfi", "-i", "testsrc2=s=320x180:r=25:d=1", "-c:v", "libx264", anim])
+        mixed = [{"index": 0, "duration": 1, "zoom": True},
+                 {"index": 8, "duration": 1, "animation": True, "zoom": False},
+                 {"index": 9, "duration": 1, "animation": True, "zoom": False},
+                 {"index": 1, "duration": 1, "zoom": True}]
+        assert gpu.frame_plan(mixed,25,True)[1] == [0,0,0,0]
+        export = root / "mixed.mp4"
+        gpu.render(mixed, str(images), {8:str(anim),9:str(anim)}, str(audio), tmp,
+                   str(export), lambda *a:None, motion=True, allow_software=True)
+        frames = ff(["-i",export,"-f","rawvideo","-pix_fmt","rgb24","pipe:1"])
+        original = ff(["-i",anim,"-f","rawvideo","-pix_fmt","rgb24","pipe:1"])
+        size=320*180*3
+        assert len(frames)//size == 100
+        for k in (0,12,24):
+            ref=Image.frombytes("RGB",(320,180),original[k*size:(k+1)*size])
+            for start in (25,50):
+                got=Image.frombytes("RGB",(320,180),frames[(start+k)*size:(start+k+1)*size])
+                hist=ImageChops.difference(ref,got).convert("L").histogram()
+                assert sum(i*n for i,n in enumerate(hist))/sum(hist)<9
         # Regression: tiny low-alpha dots used to vanish after H.264 compression.
         # Test the actual encoded Full HD output, not just a non-empty GL buffer.
         fake.W, fake.H = 1920, 1080
@@ -226,4 +248,5 @@ def run():
 
 if __name__ == "__main__":
     run()
+
 

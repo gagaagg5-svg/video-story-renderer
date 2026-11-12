@@ -43,7 +43,7 @@ import endpoints
 import pipeline
 import manual_images
 
-VERSION = "1.7.2-video-loop"
+VERSION = "1.7.3-timed-animation"
 # Публичная папка Google Диска с архивами VideoGen-x.y.z.zip. Программа при запуске смотрит список файлов
 # и предлагает скачать самую свежую версию. Пусто — проверка выключена.
 UPDATE_FOLDER_ID = ""  # An official update must not overwrite this customized build.
@@ -1865,6 +1865,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
