@@ -38,11 +38,14 @@ jobs:
           npm install --no-save playwright@1.56.1
           npx playwright install chromium --with-deps
           node kadrogen/tests/test_loop_ui.cjs
+          node kadrogen/tests/test_narration_ui.cjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: Loop-UI-Preview
-          path: video-loop-ui.png
+          path: |
+            video-loop-ui.png
+            narration-ui.png
           retention-days: 14
   build:
     runs-on: windows-2022
@@ -64,6 +67,8 @@ jobs:
         run: python tests/test_manual_images.py
       - name: Download FFmpeg
         run: python packaging/download_ffmpeg.py
+      - name: Test multiple narration files and timed silence gaps
+        run: python tests/test_narration_tracks.py
       - name: Test timed animation insertion and muted source audio
         run: python tests/test_timed_animation.py
       - name: Test zoom, slides, and encoder fallback
@@ -85,6 +90,7 @@ jobs:
           Copy-Item KadroGen.exe.config dist/KadroGen/KadroGen.exe.config
           Copy-Item "СВОИ_ИЗОБРАЖЕНИЯ_README.txt" dist/KadroGen/
           Copy-Item packaging/START_HERE_RU.txt dist/KadroGen/
+          Copy-Item packaging/narration_timing_example.csv dist/KadroGen/
       - name: Test compiled EXE with images, CSV and FFmpeg
         shell: pwsh
         run: |

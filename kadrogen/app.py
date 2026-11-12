@@ -41,9 +41,10 @@ except Exception as _e:  # pythonnet / .NET не загрузился — объ
 from fastgen_api import FastGen, app_dir, data_dir
 import endpoints
 import pipeline
+import narration_tracks
 import manual_images
 
-VERSION = "1.7.3-timed-animation"
+VERSION = "1.7.4-multi-narration"
 # Публичная папка Google Диска с архивами VideoGen-x.y.z.zip. Программа при запуске смотрит список файлов
 # и предлагает скачать самую свежую версию. Пусто — проверка выключена.
 UPDATE_FOLDER_ID = ""  # An official update must not overwrite this customized build.
@@ -175,7 +176,8 @@ def estimate_plan(opts):
     if "manual" in (opts.get("providers") or []):
         try:
             images = manual_images.list_images(opts.get("manual_folder") or "")
-            duration = pipeline.audio_duration(opts.get("audio") or "")
+            arrangement = narration_tracks.plan(opts.get("narration"))
+            duration = arrangement["duration"] if arrangement else pipeline.audio_duration(opts.get("audio") or "")
             images, durations, opening = manual_images.resolve_full_timing(
                 images, opts.get("timing_file") or None, duration,
                 opts.get("intro_video") or None)
@@ -696,9 +698,13 @@ def run_job(audio, provider, mode, style, use_refs, subtitles=False, motion=Fals
 
 def run_manual_job(audio, folder, motion, subtitles, timing_file=None,
                    intro_video=None, focus_points=None, zoom_seconds=18, film_effect="none",
-                   preview=False, film_intensity=50, overlay=None, render_music=None):
+                   preview=False, film_intensity=50, overlay=None, render_music=None, arrangement=None):
     keep_awake(True)
+    pipeline.CANCEL.clear()
     try:
+        if arrangement:
+            audio = narration_tracks.prepare(arrangement, progress_cb)
+        pipeline.check_cancel()
         with LOCK:
             STATE["job_dir"] = manual_images.job_dir(audio) + ("_preview" if preview else "")
             STATE["scenes"] = len(manual_images.list_images(folder))
@@ -1098,6 +1104,16 @@ class Api:
             return ""
         return res[0] if isinstance(res, (list, tuple)) else str(res)
 
+    def pick_narration_tracks(self):
+        res = WINDOW.create_file_dialog(webview.OPEN_DIALOG, allow_multiple=True,
+            file_types=("Озвучка (*.mp3;*.wav;*.m4a;*.ogg;*.flac)", "Все файлы (*.*)"))
+        return list(res) if isinstance(res, (list, tuple)) else [str(res)] if res else []
+
+    def pick_narration_timing(self):
+        res = WINDOW.create_file_dialog(webview.OPEN_DIALOG, allow_multiple=False,
+            file_types=("Тайминг озвучки CSV (*.csv)",))
+        return (res[0] if isinstance(res, (list, tuple)) else str(res)) if res else ""
+
     def pick_images_folder(self):
         res = WINDOW.create_file_dialog(webview.FOLDER_DIALOG, allow_multiple=False)
         if not res:
@@ -1313,7 +1329,8 @@ class Api:
             try:
                 overlay = manual_images.validate_overlay(opts.get("overlay"))
                 images = manual_images.list_images(folder)
-                duration = pipeline.audio_duration(audio)
+                arrangement = narration_tracks.plan(opts.get("narration"))
+                duration = arrangement["duration"] if arrangement else pipeline.audio_duration(audio)
                 manual_images.resolve_full_timing(images, timing_file, duration, intro_video)
                 zoom_seconds = float(zoom_seconds)
                 if not 6 <= zoom_seconds <= 40:
@@ -1338,7 +1355,7 @@ class Api:
             thread = threading.Thread(target=run_manual_job,
                                       args=(audio, folder, bool(opts.get("motion")), bool(opts.get("subtitles")),
                                             timing_file, intro_video, focus_points, zoom_seconds, film_effect,
-                                            preview, film_intensity, overlay, render_music), daemon=True)
+                                            preview, film_intensity, overlay, render_music, arrangement), daemon=True)
             thread.start()
             return {"ok": True}
         audio = (opts.get("audio") or "").strip().strip('"')

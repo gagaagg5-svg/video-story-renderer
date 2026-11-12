@@ -33,6 +33,10 @@ def run(report_path):
                 subprocess.run([pipeline.ffmpeg_bin(), "-y", "-v", "error", "-f", "lavfi", "-i",
                                 "sine=frequency=440:duration=3", str(audio)], check=True,
                                creationflags=pipeline.NO_WINDOW, timeout=30)
+                import narration_tracks
+                combined = narration_tracks.prepare(narration_tracks.plan({'tracks': [str(audio), str(audio)]}), lambda *a: None)
+                assert abs(pipeline.audio_duration(combined) - 6) < .01
+                report['multi_narration'] = True
                 intro = root / "intro.mp4"
                 subprocess.run([pipeline.ffmpeg_bin(), "-y", "-v", "error", "-f", "lavfi", "-i",
                                 "color=c=green:s=320x180:r=25:d=1", "-c:v", "libx264", str(intro)],
@@ -74,6 +78,7 @@ def run(report_path):
         report["error"] = traceback.format_exc()
     Path(report_path).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return 0 if report["ok"] else 1
+
 
 
 
