@@ -65,6 +65,8 @@ jobs:
           python -m pip install -r requirements.txt
       - name: Test image and timing import
         run: python tests/test_manual_images.py
+      - name: Test Windows locked frames, retry, and gallery isolation
+        run: python tests/test_frame_locks.py
       - name: Download FFmpeg
         run: python packaging/download_ffmpeg.py
       - name: Test media detection with metadata and Cyrillic paths
@@ -114,6 +116,7 @@ jobs:
           path: kadrogen/KadroGen-Windows-Images-Timing.zip
           retention-days: 14
           if-no-files-found: error
+
 
 
 

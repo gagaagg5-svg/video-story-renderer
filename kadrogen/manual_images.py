@@ -14,6 +14,7 @@ import random
 import re
 import shutil
 import time
+import uuid
 from urllib.parse import unquote, urlparse
 import xml.etree.ElementTree as ET
 
@@ -405,23 +406,45 @@ def job_dir(audio):
     return os.path.join(pipeline.data_dir(), "jobs", f"manual_{stem}_{suffix}")
 
 
+def _source_stamp(paths, offset=0):
+    result = []
+    for path in paths:
+        stat = os.stat(path)
+        result.append({"offset": offset, "path": os.path.normcase(os.path.abspath(path)),
+                       "size": stat.st_size, "mtime_ns": stat.st_mtime_ns})
+    return result
+
+
+def prepared_image_dir(work_dir):
+    """Only expose a completely prepared, immutable batch (never a partial/legacy one)."""
+    try:
+        state = pipeline.read_json(os.path.join(work_dir, "manual_images.json"))
+        name = state.get("directory", "") if isinstance(state, dict) else ""
+        if state.get("schema") == 2 and re.fullmatch(r"images_[0-9a-f]{32}", name):
+            return os.path.join(work_dir, name)
+    except (OSError, ValueError, AttributeError):
+        pass
+    return None
+
+
 def _import_images(paths, work_dir, progress, offset=0):
-    image_dir = os.path.join(work_dir, "images")
-    os.makedirs(image_dir, exist_ok=True)
-    stamp = [{"offset": offset, "path": os.path.normcase(os.path.abspath(p)), "size": os.stat(p).st_size,
-              "mtime_ns": os.stat(p).st_mtime_ns} for p in paths]
+    os.makedirs(work_dir, exist_ok=True)
+    stamp = _source_stamp(paths, offset)
     manifest = os.path.join(work_dir, "manual_images.json")
-    ready = all(os.path.isfile(os.path.join(image_dir, f"{i + offset:04d}.png")) for i in range(len(paths)))
-    if ready and pipeline.read_json(manifest) == stamp:
+    image_dir = prepared_image_dir(work_dir)
+    ready = image_dir and all(os.path.isfile(os.path.join(image_dir, f"{i + offset:04d}.png"))
+                              for i in range(len(paths)))
+    if ready and pipeline.read_json(manifest).get("stamp") == stamp:
         progress("images", len(paths), len(paths), "свои изображения уже подготовлены")
         return image_dir
 
-    # A changed source invalidates prerendered clips, including an interrupted run.
+    # Windows readers (gallery, Explorer, antivirus) may hold old PNGs without
+    # FILE_SHARE_DELETE. Never delete/overwrite them in the import path. Build a
+    # private batch and publish its pointer only after every frame is complete.
+    image_dir = os.path.join(work_dir, "images_" + uuid.uuid4().hex)
+    os.makedirs(image_dir)
     for name in ("clips", "clips_m", "groups"):
         shutil.rmtree(os.path.join(work_dir, name), ignore_errors=True)
-    for name in os.listdir(image_dir):
-        if re.fullmatch(r"\d{4,}\.png", name):
-            os.remove(os.path.join(image_dir, name))
     for i, path in enumerate(paths):
         pipeline.check_cancel()
         dest = os.path.join(image_dir, f"{i + offset:04d}.png")
@@ -429,19 +452,18 @@ def _import_images(paths, work_dir, progress, offset=0):
             pipeline.run_ffmpeg(["-i", path, "-frames:v", "1", dest])
             progress("images", i + 1, len(paths), f"анимация: {os.path.basename(path)}")
             continue
-        tmp = dest + ".part"
         try:
             with Image.open(path) as original:
-                corrected = ImageOps.exif_transpose(original)
-                corrected.convert("RGB").save(tmp, format="PNG")
-            os.replace(tmp, dest)
+                with ImageOps.exif_transpose(original) as corrected:
+                    with corrected.convert("RGB") as rgb:
+                        rgb.save(dest, format="PNG")
         except (OSError, ValueError, UnidentifiedImageError) as exc:
             raise ValueError(f"Не удалось открыть изображение {os.path.basename(path)}: {exc}") from exc
-        finally:
-            if os.path.exists(tmp):
-                os.remove(tmp)
         progress("images", i + 1, len(paths), f"загружено изображений: {i + 1}/{len(paths)}")
-    pipeline.write_json(manifest, stamp)
+    pipeline.check_cancel()
+    if _source_stamp(paths, offset) != stamp:
+        raise ValueError("Исходные кадры изменились во время подготовки. Повторите запуск после сохранения файлов.")
+    pipeline.write_json(manifest, {"schema": 2, "directory": os.path.basename(image_dir), "stamp": stamp})
     return image_dir
 
 
@@ -523,8 +545,8 @@ def make_video(audio, folder, motion=False, subtitles=False, progress_cb=None, t
     detail = (f"проба: до 3 с на кадр, всего {intro_length + sum(durations):.0f} с" if preview else
               "по таймингу от 00:00" if timing_file else
               f"примерно {(duration - intro_length) / n:.1f} с на кадр")
-    progress("scenes", n, n, f"{n} своих кадров · {detail}")
-    image_dir = _import_images(paths, work_dir, progress, offset=offset)
+    progress("scenes", n + offset, n + offset, f"{n} своих кадров · {detail}")
+    image_dir = _import_images(([intro_video] if intro_video else []) + paths, work_dir, progress)
     output_dir = os.path.join(pipeline.data_dir(), "output")
     os.makedirs(output_dir, exist_ok=True)
     base = os.path.basename(work_dir)
@@ -576,6 +598,7 @@ def make_video(audio, folder, motion=False, subtitles=False, progress_cb=None, t
     pipeline.cleanup_job(work_dir)
     progress("done", 1, 1, f"готово: {result}")
     return result
+
 
 
 

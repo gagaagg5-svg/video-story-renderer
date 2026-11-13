@@ -619,6 +619,7 @@ Object.assign(I18N.en, {copy_speed_label:'Second version speed',copy_speed_butto
 Object.assign(I18N.ru, {render_music_title:'Музыка в видео',render_music_add:'Добавить треки',render_music_clear:'Убрать музыку',render_music_volume:'Громкость музыки',render_music_hint:'Треки играют по порядку: 1 → 2 → 3 → 4 → снова 1, до конца ролика. Стрелками можно менять порядок. 0% — без музыки. Начните с 10–20%: озвучка остаётся на своей громкости.'});
 Object.assign(I18N.en, {render_music_title:'Music in the video',render_music_add:'Add tracks',render_music_clear:'Remove music',render_music_volume:'Music volume',render_music_hint:'Tracks play in order and repeat until the video ends. Use arrows to reorder. 0% turns music off. Start at 10–20%; narration keeps its own volume.'});
 I18N.ru.stages.music = 'Музыка'; I18N.en.stages.music = 'Music';
+I18N.ru.stages.scenes = 'Подготовка кадров'; I18N.en.stages.scenes = 'Preparing frames';
 Object.assign(I18N.ru, {loop_title:'Зациклить видео',loop_pick:'Выбрать видео',loop_hours:'Часы ',loop_minutes:'Минуты ',loop_seconds:'Секунды ',loop_audio:'Оставить звук исходного видео',loop_hint:'Один ролик повторяется подряд без переходов до заданной длительности (до 24 часов). Последний повтор обрезается по границе кадра. Сохраняется исходное разрешение. Для совместимых MP4 видеодорожка копируется без потери качества.',loop_music_hint:'Музыка необязательна. Треки играют по порядку и повторяются до конца. Громкость регулируется здесь; звук исходного видео можно отключить выше.'});
 Object.assign(I18N.en, {loop_title:'Loop a video',loop_pick:'Choose video',loop_hours:'Hours ',loop_minutes:'Minutes ',loop_seconds:'Seconds ',loop_audio:'Keep original video audio',loop_hint:'Repeat one clip with straight cuts up to the selected duration (up to 24 hours). The last repeat ends at a frame boundary. Source resolution is preserved. Compatible MP4 video is copied without quality loss.',loop_music_hint:'Music is optional. Tracks play in order and repeat until the video ends. Adjust music volume here; original clip audio can be disabled above.'});
 let loopSource = '', loopJob = false;
@@ -1061,7 +1062,8 @@ async function redoScene(i) {
   markRedo(i);
   toast(t(r.queued ? 'redo_queued' : 'redo_deleted').replace('{n}', i + 1), r.queued ? 5000 : 9000);
 }
-function buildFrames(n) { total = n; known = new Set(); const f = $('frames'); f.innerHTML = ''; for (let i = 0; i < n; i++) { const d = document.createElement('div'); d.className = 'frame pending'; d.id = 'fr' + i; d.dataset.n = String(i + 1).padStart(2, '0'); d.innerHTML = '<span class="ph"></span>'; f.appendChild(d); } }
+let frameEpoch = 0;
+function buildFrames(n) { frameEpoch++; total = n; known = new Set(); const f = $('frames'); f.innerHTML = ''; for (let i = 0; i < n; i++) { const d = document.createElement('div'); d.className = 'frame pending'; d.id = 'fr' + i; d.dataset.n = String(i + 1).padStart(2, '0'); d.innerHTML = '<span class="ph"></span>'; f.appendChild(d); } }
 async function start(o) {
   loopJob=false;
   const r = await pywebview.api.start(o || opts());
@@ -1112,10 +1114,12 @@ async function poll() {
   const g = await pywebview.api.gallery(Array.from(known));
   if (g.total && g.total !== total) buildFrames(g.total);
   (g.redo || []).forEach(i => markRedo(i));
+  const epoch = frameEpoch;
   g.items.forEach((it, k) => {
     if ((g.redo || []).includes(it.i)) return;
     known.add(it.key); known.add(it.i * 2);
     setTimeout(() => {
+      if (epoch !== frameEpoch) return;
       const d = $('fr' + it.i); if (!d) return;
       d.classList.remove('redo');
       if (!d.querySelector('img')) { d.classList.remove('pending', 'active'); d.classList.add('flash'); d.innerHTML = `<span class="ph"></span><img src="${it.img}"><span class="n">${String(it.i + 1).padStart(2, '0')}</span>${manualMode() ? '' : `<button class="redo" title="${esc(t('redo_btn'))}" onclick="redoScene(${it.i})">&#8635;</button>`}`; setTimeout(() => d.classList.remove('flash'), 800); }
@@ -1466,6 +1470,7 @@ window.addEventListener('pywebviewready', () => loadConfig(false));
 </script>
 </body>
 </html>
+
 
 
 

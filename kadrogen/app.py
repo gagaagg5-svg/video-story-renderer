@@ -44,7 +44,7 @@ import pipeline
 import narration_tracks
 import manual_images
 
-VERSION = "1.7.5-media-probe-fix"
+VERSION = "1.7.6-frame-lock-fix"
 # Публичная папка Google Диска с архивами VideoGen-x.y.z.zip. Программа при запуске смотрит список файлов
 # и предлагает скачать самую свежую версию. Пусто — проверка выключена.
 UPDATE_FOLDER_ID = ""  # An official update must not overwrite this customized build.
@@ -470,14 +470,19 @@ def make_thumb(path, size=480):
     import base64, io
     from PIL import Image
     try:
-        mt = os.path.getmtime(path)
+        stat = os.stat(path)
+        mt = (stat.st_mtime_ns, stat.st_size, size)
         cached = THUMBS.get(path)
         if cached and cached[0] == mt:
             return cached[1]
-        im = Image.open(path).convert("RGB")
-        im.thumbnail((size, size))
-        buf = io.BytesIO()
-        im.save(buf, "JPEG", quality=80)
+        # Release the Windows file handle before decoding/resizing the image.
+        with open(path, "rb") as source:
+            raw = source.read()
+        with Image.open(io.BytesIO(raw)) as source:
+            with source.convert("RGB") as im:
+                im.thumbnail((size, size))
+                buf = io.BytesIO()
+                im.save(buf, "JPEG", quality=80)
         url = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
         THUMBS[path] = (mt, url)
         return url
@@ -707,7 +712,7 @@ def run_manual_job(audio, folder, motion, subtitles, timing_file=None,
         pipeline.check_cancel()
         with LOCK:
             STATE["job_dir"] = manual_images.job_dir(audio) + ("_preview" if preview else "")
-            STATE["scenes"] = len(manual_images.list_images(folder))
+            STATE["scenes"] = len(manual_images.list_images(folder)) + int(bool(intro_video))
         result = manual_images.make_video(audio, folder, motion=motion, subtitles=subtitles,
                                           progress_cb=progress_cb, timing_file=timing_file,
                                           intro_video=intro_video, focus_points=focus_points,
@@ -1349,9 +1354,11 @@ class Api:
             with LOCK:
                 if STATE["running"] or STATE["preparing"] or SPEED_STATE["running"]:
                     return {"ok": False, "error": "Уже идёт создание видео."}
+                pipeline.LAST_JOB_DIR = None
                 STATE.update({"running": True, "stage": "start", "done": 0, "total": 0, "scenes": len(images),
                               "message": "загружаю свои изображения", "log": [], "result": None,
-                              "error": None, "cancelled": False, "started_at": time.time()})
+                              "error": None, "cancelled": False, "job_dir": None,
+                              "ended_at": None, "started_at": time.time()})
             thread = threading.Thread(target=run_manual_job,
                                       args=(audio, folder, bool(opts.get("motion")), bool(opts.get("subtitles")),
                                             timing_file, intro_video, focus_points, zoom_seconds, film_effect,
@@ -1519,10 +1526,18 @@ class Api:
         """Кадры сцен, которых окно ещё не видело. known — список индексов, уже показанных."""
         with LOCK:
             job_dir, n = STATE.get("job_dir") or pipeline.LAST_JOB_DIR, STATE.get("scenes") or 0
+            stage = STATE.get("stage")
         if not job_dir:
             return {"total": 0, "items": []}
         known = set(int(x) for x in (known or []))
         img_dir = os.path.join(job_dir, "images")
+        if os.path.basename(job_dir).startswith("manual_"):
+            # Do not publish old or partially prepared thumbnails during import.
+            if stage not in ("render", "subtitles", "music", "done"):
+                return {"total": n, "items": []}
+            img_dir = manual_images.prepared_image_dir(job_dir)
+            if not img_dir:
+                return {"total": n, "items": []}
         vid_dir = os.path.join(job_dir, "videos")
         items = []
         with pipeline.REDO_LOCK:
@@ -1544,6 +1559,8 @@ class Api:
                 thumb = make_thumb(os.path.join(img_dir, name))
                 if thumb:
                     items.append({"i": i, "key": key, "img": thumb, "video": has_video})
+                    if len(items) == 12:
+                        break
         if not n:
             scenes = pipeline.read_json(os.path.join(job_dir, "scenes.json")) or []
             n = len(scenes)
@@ -1882,6 +1899,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 

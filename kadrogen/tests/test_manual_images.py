@@ -65,13 +65,16 @@ def main():
     assert blue[2] >= 245 and blue[0] <= 10
     assert green[1] >= 120 and green[0] <= 10
     assert red[0] >= 245 and red[1] <= 10  # JPEG/WebP may shift color values.
-    imported = Path(manual.job_dir(str(audio))) / "images" / "0000.png"
+    imported = Path(manual.prepared_image_dir(manual.job_dir(str(audio)))) / "0000.png"
     first_time = imported.stat().st_mtime_ns
     manual.make_video(str(audio), str(source))
     assert imported.stat().st_mtime_ns == first_time
     Image.new("RGB", (20, 12), "yellow").save(source / "1.webp")
     manual.make_video(str(audio), str(source))
-    yellow = Image.open(imported).getpixel((1, 1))
+    changed = Path(manual.prepared_image_dir(manual.job_dir(str(audio)))) / "0000.png"
+    assert changed != imported and imported.stat().st_mtime_ns == first_time
+    with Image.open(changed) as current:
+        yellow = current.getpixel((1, 1))
     assert yellow[0] >= 245 and yellow[1] >= 245 and yellow[2] <= 10
     images = manual.list_images(str(source))
     csv_path = root / "timing.csv"
@@ -177,6 +180,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
